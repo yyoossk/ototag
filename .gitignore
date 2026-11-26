@@ -1,0 +1,8 @@
+build/
+build-core/
+dist/
+stage/
+*.apk
+*.zip
+*.jar
+jre-cache/
