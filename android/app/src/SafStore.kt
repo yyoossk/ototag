@@ -8,7 +8,7 @@ import com.yyoo.ototag.core.TagData
 import java.io.File
 
 class Item(
-    val docUri: Uri,
+    var docUri: Uri,
     var name: String,
     var local: File? = null,
     var tag: TagData? = null,
@@ -103,8 +103,11 @@ object SafStore {
             DocumentsContract.renameDocument(ctx.contentResolver, item.docUri, newName)
         } catch (e: Exception) { null }
         return if (newUri != null) {
-            val idx = Items.list.indexOf(item)
-            if (idx >= 0) Items.list[idx] = Item(newUri, newName, item.local, item.tag, item.checked)
+            // Mutate in place: replacing the Item would orphan every other
+            // reference (selection snapshots, the editor) and lose state
+            // changes like unchecking.
+            item.docUri = newUri
+            item.name = newName
             true
         } else false
     }

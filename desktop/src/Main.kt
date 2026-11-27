@@ -347,9 +347,19 @@ fun searchAndPick(
                 }
             }
             val dlg = JDialog(frame, Strings.t("candidates"), true)
+            // No Skip/Cancel button: closing the window without applying
+            // counts as skipping this file.
+            var picked = false
+            dlg.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
+            dlg.addWindowListener(object : java.awt.event.WindowAdapter() {
+                override fun windowClosed(e: java.awt.event.WindowEvent) {
+                    if (!picked) onSkip?.invoke()
+                }
+            })
             val ok = JButton(Strings.t("apply")).apply {
                 addActionListener {
                     val idx = list.selectedIndex
+                    if (idx >= 0) picked = true
                     dlg.dispose()
                     if (idx >= 0) {
                         val wp = progressDialog(Strings.t("working"), null, null)
@@ -367,10 +377,7 @@ fun searchAndPick(
                     } else onSkip?.invoke()
                 }
             }
-            val cancel = JButton(if (bulk) Strings.t("skip") else Strings.t("cancel")).apply {
-                addActionListener { dlg.dispose(); onSkip?.invoke() }
-            }
-            val btns = JPanel().apply { add(ok); add(cancel) }
+            val btns = JPanel().apply { add(ok) }
             dlg.contentPane.layout = BorderLayout()
             dlg.add(JScrollPane(list), BorderLayout.CENTER)
             dlg.add(btns, BorderLayout.SOUTH)
@@ -567,6 +574,7 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
                 Backup.backup(row.file, backupDir)
                 TagService.write(row.file, d)
                 row.tag = TagService.read(row.file)
+                row.checked = false // acted on: drop the check
                 row.status = Strings.t("done")
                 if (newBase.isNotBlank() && newBase != row.file.nameWithoutExtension) {
                     val renamed = Renamer.rename(row.file, newBase)

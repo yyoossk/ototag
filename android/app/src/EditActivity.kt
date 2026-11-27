@@ -224,6 +224,7 @@ class EditActivity : Activity() {
             }
             runOnUiThread {
                 if (err == null) {
+                    it.checked = false // acted on: drop the check in the list
                     Toast.makeText(this, Strings.t("done"), Toast.LENGTH_LONG).show()
                     setResult(RESULT_OK)
                     finish()

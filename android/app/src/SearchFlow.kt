@@ -353,17 +353,18 @@ object SearchFlow {
             this.adapter = adapter
             dividerHeight = 1
         }
-        val builder = AlertDialog.Builder(activity)
+        // No Skip/Cancel button: closing the dialog (back key / outside tap)
+        // without picking counts as skipping this file.
+        val dlg = AlertDialog.Builder(activity)
             .setTitle(Strings.t("candidates"))
             .setView(listView)
-        if (onSkip != null) {
-            // "Skip" only makes sense mid-run; a single search says Cancel.
-            builder.setNegativeButton(Strings.t(if (bulk) "skip" else "cancel")) { _, _ -> onSkip() }
-        } else {
-            builder.setNegativeButton(Strings.t("cancel"), null)
+            .create()
+        var picked = false
+        dlg.setOnDismissListener {
+            if (!picked) onSkip?.invoke()
         }
-        val dlg = builder.create()
         listView.setOnItemClickListener { _, _, which, _ ->
+            picked = true
             dlg.dismiss()
             val progress = showProgress(activity, Strings.t("working"), null, null)
             thread {
