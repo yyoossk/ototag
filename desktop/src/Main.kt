@@ -690,6 +690,9 @@ fun bulkRename() {
 fun undoSelected() {
     val sel = checkedRows()
     if (sel.isEmpty()) { info(Strings.t("select_some")); return }
+    val res = JOptionPane.showConfirmDialog(frame, Strings.t("confirm_undo"),
+        Strings.t("undo"), JOptionPane.OK_CANCEL_OPTION)
+    if (res != JOptionPane.OK_OPTION) return
     thread {
         var restored = 0
         for (row in sel) {

@@ -574,6 +574,14 @@ class MainActivity : Activity() {
     private fun undoSelected() {
         val sel = checkedItems()
         if (sel.isEmpty()) { toast(Strings.t("select_some")); return }
+        AlertDialog.Builder(this)
+            .setMessage(Strings.t("confirm_undo"))
+            .setPositiveButton(Strings.t("undo")) { _, _ -> doUndo(sel) }
+            .setNegativeButton(Strings.t("cancel"), null)
+            .show()
+    }
+
+    private fun doUndo(sel: List<Item>) {
         thread {
             var restored = 0
             for (item in sel) {
