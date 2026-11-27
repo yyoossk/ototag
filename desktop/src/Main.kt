@@ -1184,21 +1184,43 @@ fun applySearchTo(row: Row, label: String?, bulk: Boolean, onSkip: () -> Unit, o
                         JOptionPane.INFORMATION_MESSAGE)
                     done(); return@invokeLater
                 }
-                val res = JOptionPane.showConfirmDialog(frame,
-                    "$summary\n\n${Strings.t("ask_rename")}\n${row.file.name}\n→ $newName",
-                    Strings.t("applied"), JOptionPane.YES_NO_OPTION)
-                if (res != JOptionPane.YES_OPTION) { done(); return@invokeLater }
-                thread {
-                    val renamed = Renamer.rename(row.file, base)
-                    if (renamed != null) {
-                        Backup.move(row.file, renamed, backupDir)
-                        val idx = rows.indexOf(row)
-                        if (idx >= 0) rows[idx] = Row(renamed).also {
-                            it.checked = false; it.tag = row.tag; it.status = Strings.t("done")
+                // The same offer with the track number stripped, when
+                // the tag-based name carries one and the result differs.
+                val strippedBase = Renamer.stripTrackPrefix(base)
+                val strippedName = if (strippedBase != base)
+                    "$strippedBase.${row.file.extension}" else ""
+                val hasStrip = strippedName.isNotBlank() && strippedName != row.file.name
+                fun doRename(useBase: String) {
+                    thread {
+                        val renamed = Renamer.rename(row.file, useBase)
+                        if (renamed != null) {
+                            Backup.move(row.file, renamed, backupDir)
+                            val idx = rows.indexOf(row)
+                            if (idx >= 0) rows[idx] = Row(renamed).also {
+                                it.checked = false; it.tag = row.tag; it.status = Strings.t("done")
+                            }
+                            refresh()
                         }
-                        refresh()
+                        done()
                     }
-                    done()
+                }
+                if (hasStrip) {
+                    val opts = arrayOf(Strings.t("rename"),
+                        Strings.t("rename_no_num"), Strings.t("keep_name"))
+                    val pick = JOptionPane.showOptionDialog(frame,
+                        "$summary\n\n${Strings.t("ask_rename")}\n${row.file.name}\n→ $newName\n→ $strippedName",
+                        Strings.t("applied"), JOptionPane.DEFAULT_OPTION,
+                        JOptionPane.QUESTION_MESSAGE, null, opts, opts[0])
+                    when (pick) {
+                        0 -> doRename(base)
+                        1 -> doRename(strippedBase)
+                        else -> done()
+                    }
+                } else {
+                    val res = JOptionPane.showConfirmDialog(frame,
+                        "$summary\n\n${Strings.t("ask_rename")}\n${row.file.name}\n→ $newName",
+                        Strings.t("applied"), JOptionPane.YES_NO_OPTION)
+                    if (res == JOptionPane.YES_OPTION) doRename(base) else done()
                 }
             }
         }

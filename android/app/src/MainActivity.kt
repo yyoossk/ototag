@@ -830,11 +830,17 @@ class MainActivity : Activity() {
         val base = Renamer.nameFromTag(newTag)
         val newName = if (base.isBlank()) "" else "$base.${item.ext}"
         val canRename = newName.isNotBlank() && newName != item.name
+        // The same offer with the track number stripped, when the
+        // tag-based name carries one and the result differs.
+        val strippedBase = Renamer.stripTrackPrefix(base)
+        val strippedName = if (strippedBase != base) "$strippedBase.${item.ext}" else ""
+        val hasStrip = strippedName.isNotBlank() && strippedName != item.name
         val msg = buildString {
             append(newTag.title)
             if (newTag.artist.isNotBlank()) append("\n${newTag.artist}")
             if (newTag.album.isNotBlank()) append("\n${newTag.album}")
             if (canRename) append("\n\n${Strings.t("ask_rename")}\n${item.name}\n→ $newName")
+            if (canRename && hasStrip) append("\n→ $strippedName")
         }
         val b = AlertDialog.Builder(this)
             .setTitle(Strings.t("applied"))
@@ -851,6 +857,14 @@ class MainActivity : Activity() {
                 thread {
                     SafStore.rename(this, item, newName)
                     runOnUiThread { adapter.notifyDataSetChanged(); done() }
+                }
+            }
+            if (hasStrip) {
+                b.setNeutralButton(Strings.t("rename_no_num")) { _, _ ->
+                    thread {
+                        SafStore.rename(this, item, strippedName)
+                        runOnUiThread { adapter.notifyDataSetChanged(); done() }
+                    }
                 }
             }
             b.setNegativeButton(Strings.t("keep_name")) { _, _ -> done() }

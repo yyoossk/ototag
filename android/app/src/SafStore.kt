@@ -305,14 +305,41 @@ object SafStore {
         val newUri = try {
             DocumentsContract.renameDocument(ctx.contentResolver, item.docUri, newName)
         } catch (e: Exception) { null }
-        return if (newUri != null) {
+        if (newUri != null) {
             // Mutate in place: replacing the Item would orphan every other
             // reference (selection snapshots, the editor) and lose state
             // changes like unchecking.
             item.docUri = newUri
             item.name = newName
-            true
-        } else false
+            return true
+        }
+        // Some providers rename the file and then return null or throw
+        // anyway, so a failed call does not prove a failed rename (the
+        // user saw "failed" for a rename that had in fact happened).
+        // Check what is actually on disk before reporting failure.
+        // (a) The document kept its id and now reports the new name.
+        try {
+            ctx.contentResolver.query(item.docUri,
+                arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+                null, null, null)?.use { c ->
+                if (c.moveToFirst() && c.getString(0) == newName) {
+                    item.name = newName
+                    return true
+                }
+            }
+        } catch (e: Exception) { }
+        // (b) The id is path-based and changed with the name: find the
+        // renamed child in the parent folder and adopt its uri.
+        val parent = item.parentUri
+        if (parent != null) {
+            val found = findChild(ctx, parent, newName)
+            if (found != null) {
+                item.docUri = found
+                item.name = newName
+                return true
+            }
+        }
+        return false
     }
 
     /** Whether tree enumeration descends into subfolders (a user setting). */
