@@ -145,6 +145,33 @@ fun main() {
     check("isNewer false (same)", !UpdateChecker.isNewer("20261127-0644", "20261127-0644"))
     check("isNewer false (older)", !UpdateChecker.isNewer("20261127-0528", "20261127-0644"))
 
+    // --- disguised container: a real MP4 carrying an .mp3 name (YouTube download) ---
+    val work2 = File("testwork"); work2.mkdirs()
+    val realM4a = File(work2, "real.m4a")
+    File("../samples/03. 残響散歌.m4a").copyTo(realM4a, overwrite = true)
+    TagService.write(realM4a, TagData(title = "Doppelgänger", artist = "Creepy Nuts"))
+    val disguised = File(work2, "disguised.mp3")
+    realM4a.copyTo(disguised, overwrite = true)
+    check("sniff mp4-in-mp3", TagService.sniffFormat(disguised) ==
+        org.jaudiotagger.kt.AudioFormat.MP4, TagService.sniffFormat(disguised).toString())
+    val dRead = TagService.read(disguised)
+    check("disguised read", dRead.title == "Doppelgänger" && dRead.artist == "Creepy Nuts", dRead.title)
+    TagService.write(disguised, TagData(title = "Doppelgänger", artist = "Creepy Nuts", album = "LEGION"))
+    val dBack = TagService.read(disguised)
+    check("disguised write + verify", dBack.album == "LEGION", dBack.album)
+    val head = disguised.readBytes().copyOfRange(4, 8).toString(Charsets.US_ASCII)
+    check("disguised stays mp4", head == "ftyp", head)
+
+    // --- free-text search (user-typed query) over the recorded MB response ---
+    MbClient.fetcher = { url ->
+        when {
+            url.contains("musicbrainz.org/ws/2/recording") -> File("testdata/search.json").readBytes()
+            else -> throw IllegalStateException("unexpected url $url")
+        }
+    }
+    val free = MbClient.searchFreeText("Lemon 米津玄師")
+    check("free-text search", free.isNotEmpty(), free.size.toString())
+
     println(if (failures == 0) "ALL PASS" else "FAILURES: $failures")
     kotlin.system.exitProcess(if (failures == 0) 0 else 1)
 }

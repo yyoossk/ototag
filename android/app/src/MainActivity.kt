@@ -328,7 +328,9 @@ class MainActivity : Activity() {
                         runOnUiThread {
                             if (newTag.coverFetchFailed) toast(Strings.t("cover_failed"))
                             if (ok) showApplied(item, newTag) { applyNext(sel, idx + 1) }
-                            else applyNext(sel, idx + 1)
+                            else Ui.failDialog(this, "${item.name}\n${item.error ?: ""}") {
+                                applyNext(sel, idx + 1)
+                            }
                         }
                     }
                 }

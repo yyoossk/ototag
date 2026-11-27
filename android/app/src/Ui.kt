@@ -59,6 +59,32 @@ object Ui {
         cornerRadius = dpf(ctx, radiusDp)
     }
 
+    /** Big centred failure dialog: a clear "failed" title plus the details. */
+    fun failDialog(ctx: Context, details: String, onOk: (() -> Unit)? = null) {
+        val d = { v: Int -> (v * ctx.resources.displayMetrics.density).toInt() }
+        val body = android.widget.LinearLayout(ctx).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(d(24), d(8), d(24), d(4))
+            addView(android.widget.TextView(ctx).apply {
+                text = com.yyoo.ototag.core.Strings.t("failed_title")
+                textSize = 22f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(0xFFDC2626.toInt())
+                gravity = android.view.Gravity.CENTER
+            })
+            addView(android.widget.TextView(ctx).apply {
+                text = details
+                textSize = 14f
+                setTextColor(SUB)
+                setPadding(0, d(10), 0, 0)
+            })
+        }
+        android.app.AlertDialog.Builder(ctx)
+            .setView(body)
+            .setPositiveButton("OK") { _, _ -> onOk?.invoke() }
+            .show()
+    }
+
     /** White bold text on a coloured rounded background: the house button style. */
     fun styleButton(btn: Button, color: Int, radiusDp: Float = 14f) {
         btn.background = buttonBg(btn.context, color, radiusDp)

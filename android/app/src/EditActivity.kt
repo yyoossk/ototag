@@ -205,7 +205,7 @@ class EditActivity : Activity() {
         val newBase = Renamer.sanitize(filenameInput.text.toString())
         Toast.makeText(this, Strings.t("working"), Toast.LENGTH_SHORT).show()
         thread {
-            var msg = Strings.t("done")
+            var err: String? = null
             try {
                 SafStore.ensureLocal(this, it)
                 Backup.backup(it.local!!, SafStore.backupDir(this))
@@ -217,14 +217,18 @@ class EditActivity : Activity() {
                 it.tag = TagService.read(it.local!!)
                 if (newBase.isNotBlank() && newBase != it.name.substringBeforeLast('.')) {
                     val newName = newBase + "." + it.ext
-                    if (!SafStore.rename(this, it, newName)) msg = Strings.t("failed")
+                    if (!SafStore.rename(this, it, newName)) err = "rename failed: $newName"
                 }
             } catch (e: Exception) {
-                msg = "${Strings.t("failed")}: ${e.message}"
+                err = "${e.javaClass.simpleName}: ${e.message}"
             }
             runOnUiThread {
-                Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
-                if (msg == Strings.t("done")) finish()
+                if (err == null) {
+                    Toast.makeText(this, Strings.t("done"), Toast.LENGTH_LONG).show()
+                    finish()
+                } else {
+                    Ui.failDialog(this, err!!)
+                }
             }
         }
     }

@@ -80,7 +80,16 @@ object MbClient {
         if (album.isNotBlank()) parts.add("release:\"${esc(album)}\"")
         require(parts.isNotEmpty()) { "empty query" }
         val q = parts.joinToString(" AND ")
-        val url = "$mbBase/ws/2/recording/?query=${enc(q)}&fmt=json&limit=15"
+        return searchRecordings("$mbBase/ws/2/recording/?query=${enc(q)}&fmt=json&limit=15")
+    }
+
+    /** Free-text recording search for a user-typed query. */
+    fun searchFreeText(query: String): List<MbCandidate> {
+        require(query.isNotBlank()) { "empty query" }
+        return searchRecordings("$mbBase/ws/2/recording/?query=${enc(query)}&fmt=json&limit=15")
+    }
+
+    private fun searchRecordings(url: String): List<MbCandidate> {
         val root = JsonParser(String(get(url), Charsets.UTF_8)).parse().asObj()
         val out = ArrayList<MbCandidate>()
         for (r in root["recordings"].asArr()) {

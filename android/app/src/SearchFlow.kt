@@ -38,6 +38,46 @@ object SearchFlow {
         onStop: (() -> Unit)? = null,
         onPicked: (TagData) -> Unit
     ) {
+        // The user can type / edit the search words before the search runs.
+        val autoQuery = listOfNotNull(
+            tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title,
+            tag?.artist?.takeIf { it.isNotBlank() } ?: parsed?.artist
+        ).joinToString(" ").trim()
+        val pad = (20 * activity.resources.displayMetrics.density).toInt()
+        val input = android.widget.EditText(activity).apply {
+            setText(autoQuery)
+            setSelection(autoQuery.length)
+            hint = Strings.t("enter_query")
+            setSingleLine(true)
+        }
+        val wrap = android.widget.FrameLayout(activity).apply {
+            setPadding(pad, pad / 2, pad, 0)
+            addView(input)
+        }
+        AlertDialog.Builder(activity)
+            .setTitle(Strings.t("enter_query"))
+            .setView(wrap)
+            .setPositiveButton(Strings.t("search")) { _, _ ->
+                val q = input.text.toString().trim()
+                if (q.isBlank()) { onStop?.invoke() }
+                else runSearch(activity, tag, parsed, q, q == autoQuery,
+                    progressLabel, onSkip, onStop, onPicked)
+            }
+            .setNegativeButton(Strings.t("cancel")) { _, _ -> onStop?.invoke() }
+            .show()
+    }
+
+    private fun runSearch(
+        activity: Activity,
+        tag: TagData?,
+        parsed: ParsedName?,
+        query: String,
+        auto: Boolean,
+        progressLabel: String?,
+        onSkip: (() -> Unit)?,
+        onStop: (() -> Unit)?,
+        onPicked: (TagData) -> Unit
+    ) {
         val stopped = AtomicBoolean(false)
         val progress = showProgress(activity, Strings.t("searching"), progressLabel) {
             stopped.set(true)
@@ -47,35 +87,46 @@ object SearchFlow {
             val found = LinkedHashMap<String, MbCandidate>()
             var mbError: Exception? = null
             try {
-                if (tag != null && !tag.isBasicallyEmpty()) {
-                    for (c in MbClient.searchByTagsOrName(tag.title, tag.artist, tag.album))
+                if (!auto) {
+                    for (c in MbClient.searchFreeText(query))
                         found.putIfAbsent(c.recordingId, c)
-                }
-                if (found.isEmpty() && parsed != null) {
-                    for ((t, a, al) in NameParser.queries(parsed)) {
-                        for (c in MbClient.searchByTagsOrName(t, a, al))
+                } else {
+                    if (tag != null && !tag.isBasicallyEmpty()) {
+                        for (c in MbClient.searchByTagsOrName(tag.title, tag.artist, tag.album))
                             found.putIfAbsent(c.recordingId, c)
-                        if (found.isNotEmpty()) break
+                    }
+                    if (found.isEmpty() && parsed != null) {
+                        for ((t, a, al) in NameParser.queries(parsed)) {
+                            for (c in MbClient.searchByTagsOrName(t, a, al))
+                                found.putIfAbsent(c.recordingId, c)
+                            if (found.isNotEmpty()) break
+                        }
                     }
                 }
             } catch (e: Exception) { mbError = e }
             // AnimeThemes (anime OP/ED) as a second source; best effort only.
             val atSongs = try {
-                val q1 = tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title ?: ""
-                val q2 = tag?.artist?.takeIf { it.isNotBlank() } ?: parsed?.artist ?: ""
-                val first = if (q1.isNotBlank()) AnimeThemesClient.searchSongs(q1) else emptyList()
-                if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
-                else AnimeThemesClient.searchSongs(q2)
+                if (!auto) AnimeThemesClient.searchSongs(query)
+                else {
+                    val q1 = tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title ?: ""
+                    val q2 = tag?.artist?.takeIf { it.isNotBlank() } ?: parsed?.artist ?: ""
+                    val first = if (q1.isNotBlank()) AnimeThemesClient.searchSongs(q1) else emptyList()
+                    if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+                    else AnimeThemesClient.searchSongs(q2)
+                }
             } catch (e: Exception) { emptyList() }
             // iTunes (Apple Music catalog) as a third source; best effort only.
             val itunes = try {
-                val q1 = listOfNotNull(
-                    tag?.title?.takeIf { it.isNotBlank() },
-                    tag?.artist?.takeIf { it.isNotBlank() }).joinToString(" ")
-                val q2 = listOfNotNull(parsed?.title, parsed?.artist).joinToString(" ")
-                val first = if (q1.isNotBlank()) ItunesClient.search(q1) else emptyList()
-                if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
-                else ItunesClient.search(q2)
+                if (!auto) ItunesClient.search(query)
+                else {
+                    val q1 = listOfNotNull(
+                        tag?.title?.takeIf { it.isNotBlank() },
+                        tag?.artist?.takeIf { it.isNotBlank() }).joinToString(" ")
+                    val q2 = listOfNotNull(parsed?.title, parsed?.artist).joinToString(" ")
+                    val first = if (q1.isNotBlank()) ItunesClient.search(q1) else emptyList()
+                    if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+                    else ItunesClient.search(q2)
+                }
             } catch (e: Exception) { emptyList() }
             if (stopped.get()) return@thread
             val cands = found.values.toList()
@@ -84,7 +135,8 @@ object SearchFlow {
                 progress.dismiss()
                 if (cands.isEmpty() && atSongs.isEmpty() && itunes.isEmpty()) {
                     if (mbError != null) {
-                        Toast.makeText(activity, "${Strings.t("failed")}: ${mbError.message}", Toast.LENGTH_LONG).show()
+                        Ui.failDialog(activity,
+                            "${mbError.javaClass.simpleName}: ${mbError.message}")
                         onStop?.invoke()
                     } else {
                         Toast.makeText(activity, Strings.t("no_results"), Toast.LENGTH_LONG).show()
@@ -213,7 +265,7 @@ object SearchFlow {
                 } catch (e: Exception) {
                     activity.runOnUiThread {
                         progress.dismiss()
-                        Toast.makeText(activity, "${Strings.t("failed")}: ${e.message}", Toast.LENGTH_LONG).show()
+                        Ui.failDialog(activity, "${e.javaClass.simpleName}: ${e.message}")
                         onSkip?.invoke()
                     }
                 }

@@ -111,6 +111,12 @@ fun info(msg: String) = SwingUtilities.invokeLater {
     JOptionPane.showMessageDialog(frame, msg, "OtoTag", JOptionPane.INFORMATION_MESSAGE)
 }
 
+/** Centred failure dialog: a clear "failed" title plus the error details. */
+fun fail(details: String) = SwingUtilities.invokeLater {
+    JOptionPane.showMessageDialog(frame, details, Strings.t("failed_title"),
+        JOptionPane.ERROR_MESSAGE)
+}
+
 /** Non-modal progress dialog that stays up until the flow dismisses it. */
 fun progressDialog(message: String, label: String?, onCancel: (() -> Unit)?): JDialog {
     val dlg = JDialog(frame, "OtoTag", false)
@@ -137,6 +143,15 @@ fun searchAndPick(
     onSkip: (() -> Unit)? = null, onStop: (() -> Unit)? = null,
     onPicked: (TagData) -> Unit
 ) {
+    // The user can type / edit the search words before the search runs.
+    val autoQuery = listOfNotNull(
+        tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title,
+        tag?.artist?.takeIf { it.isNotBlank() } ?: parsed?.artist
+    ).joinToString(" ").trim()
+    val typed = JOptionPane.showInputDialog(frame, Strings.t("enter_query"), autoQuery)
+    if (typed == null || typed.isBlank()) { onStop?.invoke(); return }
+    val query = typed.trim()
+    val auto = query == autoQuery
     val stopped = java.util.concurrent.atomic.AtomicBoolean(false)
     var progress: JDialog? = null // only touched on the EDT (creation and disposal are both invokeLater)
     SwingUtilities.invokeLater {
@@ -148,34 +163,45 @@ fun searchAndPick(
         val found = LinkedHashMap<String, MbCandidate>()
         var mbError: Exception? = null
         try {
-            if (tag != null && !tag.isBasicallyEmpty()) {
-                for (c in MbClient.searchByTagsOrName(tag.title, tag.artist, tag.album))
+            if (!auto) {
+                for (c in MbClient.searchFreeText(query))
                     found.putIfAbsent(c.recordingId, c)
-            }
-            if (found.isEmpty() && parsed != null) {
-                for ((t, a, al) in NameParser.queries(parsed)) {
-                    for (c in MbClient.searchByTagsOrName(t, a, al)) found.putIfAbsent(c.recordingId, c)
-                    if (found.isNotEmpty()) break
+            } else {
+                if (tag != null && !tag.isBasicallyEmpty()) {
+                    for (c in MbClient.searchByTagsOrName(tag.title, tag.artist, tag.album))
+                        found.putIfAbsent(c.recordingId, c)
+                }
+                if (found.isEmpty() && parsed != null) {
+                    for ((t, a, al) in NameParser.queries(parsed)) {
+                        for (c in MbClient.searchByTagsOrName(t, a, al)) found.putIfAbsent(c.recordingId, c)
+                        if (found.isNotEmpty()) break
+                    }
                 }
             }
         } catch (e: Exception) { mbError = e }
         // AnimeThemes (anime OP/ED) as a second source; best effort only.
         val atSongs = try {
-            val q1 = tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title ?: ""
-            val q2 = tag?.artist?.takeIf { it.isNotBlank() } ?: parsed?.artist ?: ""
-            val first = if (q1.isNotBlank()) AnimeThemesClient.searchSongs(q1) else emptyList()
-            if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
-            else AnimeThemesClient.searchSongs(q2)
+            if (!auto) AnimeThemesClient.searchSongs(query)
+            else {
+                val q1 = tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title ?: ""
+                val q2 = tag?.artist?.takeIf { it.isNotBlank() } ?: parsed?.artist ?: ""
+                val first = if (q1.isNotBlank()) AnimeThemesClient.searchSongs(q1) else emptyList()
+                if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+                else AnimeThemesClient.searchSongs(q2)
+            }
         } catch (e: Exception) { emptyList() }
         // iTunes (Apple Music catalog) as a third source; best effort only.
         val itunes = try {
-            val q1 = listOfNotNull(
-                tag?.title?.takeIf { it.isNotBlank() },
-                tag?.artist?.takeIf { it.isNotBlank() }).joinToString(" ")
-            val q2 = listOfNotNull(parsed?.title, parsed?.artist).joinToString(" ")
-            val first = if (q1.isNotBlank()) ItunesClient.search(q1) else emptyList()
-            if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
-            else ItunesClient.search(q2)
+            if (!auto) ItunesClient.search(query)
+            else {
+                val q1 = listOfNotNull(
+                    tag?.title?.takeIf { it.isNotBlank() },
+                    tag?.artist?.takeIf { it.isNotBlank() }).joinToString(" ")
+                val q2 = listOfNotNull(parsed?.title, parsed?.artist).joinToString(" ")
+                val first = if (q1.isNotBlank()) ItunesClient.search(q1) else emptyList()
+                if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+                else ItunesClient.search(q2)
+            }
         } catch (e: Exception) { emptyList() }
         if (stopped.get()) return@thread
         val cands = found.values.toList()
@@ -183,7 +209,7 @@ fun searchAndPick(
             progress?.dispose()
             if (stopped.get()) return@invokeLater
             if (cands.isEmpty() && atSongs.isEmpty() && itunes.isEmpty()) {
-                if (mbError != null) { info("${Strings.t("failed")}: ${mbError.message}"); onStop?.invoke() }
+                if (mbError != null) { fail("${mbError.javaClass.simpleName}: ${mbError.message}"); onStop?.invoke() }
                 else { info(Strings.t("no_results")); onSkip?.invoke() }
                 return@invokeLater
             }
@@ -237,7 +263,7 @@ fun searchAndPick(
                                 SwingUtilities.invokeLater { wp.dispose(); onPicked(t) }
                             } catch (e: Exception) {
                                 SwingUtilities.invokeLater { wp.dispose() }
-                                info("${Strings.t("failed")}: ${e.message}")
+                                fail("${e.javaClass.simpleName}: ${e.message}")
                                 onSkip?.invoke()
                             }
                         }
@@ -270,7 +296,10 @@ fun applySearchTo(row: Row, label: String?, onSkip: () -> Unit, onStop: () -> Un
                 ok = true
             } catch (e: Exception) { row.status = "${Strings.t("failed")}: ${e.message}" }
             refresh()
-            if (!ok) { done(); return@thread }
+            if (!ok) {
+                fail("${row.file.name}\n${row.status}")
+                done(); return@thread
+            }
             // Clear centred confirmation of what went in; offers the rename too.
             SwingUtilities.invokeLater {
                 val summary = buildString {
@@ -452,10 +481,10 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
                         }
                     } else fail = Strings.t("collision")
                 }
-            } catch (e: Exception) { fail = e.message }
+            } catch (e: Exception) { fail = "${e.javaClass.simpleName}: ${e.message}" }
             SwingUtilities.invokeLater {
                 refresh()
-                if (fail == null) dispose() else info("${Strings.t("failed")}: $fail")
+                if (fail == null) dispose() else fail(fail!!)
             }
         }
     }

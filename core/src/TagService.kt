@@ -17,7 +17,55 @@ object TagService {
         else -> null
     }
 
-    fun read(file: File): TagData {
+    /** Detects the real container from magic bytes; extensions often lie
+     *  (e.g. a YouTube download is an MP4 renamed to .mp3). */
+    fun sniffFormat(file: File): org.jaudiotagger.kt.AudioFormat? {
+        val head = ByteArray(12)
+        val n = try { file.inputStream().use { it.read(head) } } catch (e: Exception) { 0 }
+        if (n < 4) return null
+        fun has(s: String, off: Int = 0): Boolean {
+            val b = s.toByteArray(Charsets.US_ASCII)
+            if (n < off + b.size) return false
+            for (i in b.indices) if (head[off + i] != b[i]) return false
+            return true
+        }
+        return when {
+            has("ftyp", 4) -> org.jaudiotagger.kt.AudioFormat.MP4
+            has("fLaC") -> org.jaudiotagger.kt.AudioFormat.FLAC
+            has("OggS") -> org.jaudiotagger.kt.AudioFormat.OGG
+            has("ID3") -> org.jaudiotagger.kt.AudioFormat.MP3
+            (head[0].toInt() and 0xFF) == 0xFF && (head[1].toInt() and 0xE0) == 0xE0 ->
+                org.jaudiotagger.kt.AudioFormat.MP3
+            else -> null
+        }
+    }
+
+    private fun extFor(fmt: org.jaudiotagger.kt.AudioFormat) = when (fmt) {
+        org.jaudiotagger.kt.AudioFormat.MP3 -> "mp3"
+        org.jaudiotagger.kt.AudioFormat.FLAC -> "flac"
+        org.jaudiotagger.kt.AudioFormat.MP4 -> "m4a"
+        org.jaudiotagger.kt.AudioFormat.OGG -> "ogg"
+        else -> "bin"
+    }
+
+    /** When the real container disagrees with the extension, the tag library
+     *  (which dispatches on extension) cannot parse the file. Work on a
+     *  correctly-named copy instead, and copy the result back for writes. */
+    private fun <T> withRealFile(file: File, writeBack: Boolean, block: (File) -> T): T {
+        val sniffed = sniffFormat(file)
+        if (sniffed == null || sniffed == formatOf(file)) return block(file)
+        val tmp = File(file.parentFile, file.nameWithoutExtension + ".ototag-real." + extFor(sniffed))
+        file.copyTo(tmp, overwrite = true)
+        try {
+            val r = block(tmp)
+            if (writeBack) tmp.copyTo(file, overwrite = true)
+            return r
+        } finally { tmp.delete() }
+    }
+
+    fun read(file: File): TagData = withRealFile(file, false) { readImpl(it) }
+
+    private fun readImpl(file: File): TagData {
         val af = AudioTagger.read(KPath(file.absolutePath))
         val t = af.tag
         val d = TagData()
@@ -55,7 +103,9 @@ object TagService {
     }
 
     /** Writes tags to a copy-first workflow: caller backs up before calling. */
-    fun write(file: File, d: TagData) {
+    fun write(file: File, d: TagData) = withRealFile(file, true) { writeImpl(it, d) }
+
+    private fun writeImpl(file: File, d: TagData) {
         val af = AudioTagger.read(KPath(file.absolutePath))
         val fmt = af.format
         var t = af.tag
