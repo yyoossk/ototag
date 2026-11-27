@@ -445,7 +445,8 @@ class MainActivity : Activity() {
         thread {
             try { Thread.sleep(30_000) } catch (e: Exception) { }
             try { Backup.prune(SafStore.backupDir(this)) } catch (e: Exception) { }
-            SafStore.cleanupCache(this)
+            SafStore.cleanupCache(this,
+                Items.list.mapNotNull { it.local?.absolutePath }.toSet())
         }
         title = "OtoTag"
 
@@ -791,6 +792,7 @@ class MainActivity : Activity() {
                     thread {
                         var ok = false
                         try {
+                            SafStore.ensureLocal(this@MainActivity, item)
                             Backup.backup(item.local!!, SafStore.backupDir(this))
                             TagService.write(item.local!!, newTag)
                             SafStore.writeBack(this, item)

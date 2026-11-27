@@ -158,9 +158,14 @@ object SafStore {
      * practical equivalent of cleaning up on exit, with no hook needed.
      * Also drops the transient verify files.
      */
-    fun cleanupCache(ctx: Context) {
+    fun cleanupCache(ctx: Context, keep: Set<String> = emptySet()) {
         try {
-            File(ctx.cacheDir, "items").listFiles()?.forEach { it.delete() }
+            File(ctx.cacheDir, "items").listFiles()?.forEach {
+                // Copies belonging to the list on screen are in use:
+                // deleting one mid-search makes the apply fail with
+                // "The source file doesn't exist".
+                if (it.absolutePath !in keep) it.delete()
+            }
             ctx.cacheDir.listFiles()?.forEach {
                 if (it.name == "verify.bin" || it.name.startsWith("verify.")) it.delete()
             }
