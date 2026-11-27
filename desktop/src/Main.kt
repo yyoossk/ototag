@@ -154,6 +154,7 @@ fun progressDialog(message: String, label: String?, onCancel: (() -> Unit)?): JD
 fun searchAndPick(
     tag: TagData?, parsed: ParsedName?, progressLabel: String? = null,
     onSkip: (() -> Unit)? = null, onStop: (() -> Unit)? = null,
+    bulk: Boolean = false,
     onPicked: (TagData) -> Unit
 ) {
     // The user can type / edit the search words before the search runs.
@@ -366,7 +367,7 @@ fun searchAndPick(
                     } else onSkip?.invoke()
                 }
             }
-            val cancel = JButton(if (onSkip != null) Strings.t("skip") else Strings.t("cancel")).apply {
+            val cancel = JButton(if (bulk) Strings.t("skip") else Strings.t("cancel")).apply {
                 addActionListener { dlg.dispose(); onSkip?.invoke() }
             }
             val btns = JPanel().apply { add(ok); add(cancel) }
@@ -378,8 +379,8 @@ fun searchAndPick(
     }
 }
 
-fun applySearchTo(row: Row, label: String?, onSkip: () -> Unit, onStop: () -> Unit, done: () -> Unit) {
-    searchAndPick(row.tag, NameParser.parse(row.file), label, onSkip, onStop) { newTag ->
+fun applySearchTo(row: Row, label: String?, bulk: Boolean, onSkip: () -> Unit, onStop: () -> Unit, done: () -> Unit) {
+    searchAndPick(row.tag, NameParser.parse(row.file), label, onSkip, onStop, bulk) { newTag ->
         thread {
             var ok = false
             try {
@@ -436,7 +437,7 @@ fun searchApplySelected() {
     if (sel.isEmpty()) { info(Strings.t("select_some")); return }
     fun next(i: Int) {
         if (i >= sel.size) return
-        applySearchTo(sel[i], "${i + 1} / ${sel.size} — ${sel[i].file.name}",
+        applySearchTo(sel[i], "${i + 1} / ${sel.size} — ${sel[i].file.name}", sel.size > 1,
             onSkip = { next(i + 1) }, onStop = { }) { next(i + 1) }
     }
     next(0)
@@ -573,7 +574,7 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
                         Backup.move(row.file, renamed, backupDir)
                         val idx = rows.indexOf(row)
                         if (idx >= 0) rows[idx] = Row(renamed).also {
-                            it.checked = row.checked; it.tag = row.tag; it.status = row.status
+                            it.checked = false; it.tag = row.tag; it.status = row.status
                         }
                     } else fail = Strings.t("collision")
                 }
@@ -636,43 +637,40 @@ fun bulkEdit() {
 fun bulkRename() {
     val sel = checkedRows()
     if (sel.isEmpty()) { info(Strings.t("select_some")); return }
-    val patternField = JTextField("%track% - %title%", 30)
-    val previewArea = JTextArea(10, 60).apply { isEditable = false }
-    fun updatePreview() {
-        val sb = StringBuilder()
-        val seen = HashSet<String>()
-        for (row in sel) {
-            // Renaming only renames the file: values come from the file name.
-            val d = Renamer.dataFromName(NameParser.parse(row.file))
-            val newBase = Renamer.applyPattern(patternField.text, d, row.file.nameWithoutExtension)
-            val newName = newBase + "." + row.file.extension
-            val mark = if (!seen.add(newName.lowercase()) || (File(row.file.parentFile, newName).exists() && newName != row.file.name)) " [${Strings.t("collision")}]" else ""
-            sb.append(row.file.name).append("  ->  ").append(newName).append(mark).append('\n')
+    // Plain file-name editing: one text field per file with its current
+    // name (extension fixed). No patterns.
+    val fields = ArrayList<Pair<Row, JTextField>>()
+    val form = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
+    for (row in sel) {
+        val line = JPanel(BorderLayout(6, 0)).apply {
+            border = BorderFactory.createEmptyBorder(2, 2, 2, 2)
         }
-        previewArea.text = sb.toString()
+        val tf = JTextField(row.file.nameWithoutExtension, 44)
+        line.add(tf, BorderLayout.CENTER)
+        line.add(JLabel("." + row.file.extension), BorderLayout.EAST)
+        form.add(line)
+        fields.add(row to tf)
     }
-    patternField.addKeyListener(object : java.awt.event.KeyAdapter() {
-        override fun keyReleased(e: java.awt.event.KeyEvent) { updatePreview() }
-    })
-    updatePreview()
     val panel = JPanel(BorderLayout(6, 6))
-    panel.add(patternField, BorderLayout.NORTH)
-    panel.add(JScrollPane(previewArea), BorderLayout.CENTER)
-    val res = JOptionPane.showConfirmDialog(frame, panel, Strings.t("rename_preview"),
+    panel.add(JScrollPane(form).apply { preferredSize = java.awt.Dimension(560, 320) },
+        BorderLayout.CENTER)
+    val res = JOptionPane.showConfirmDialog(frame, panel, Strings.t("rename"),
         JOptionPane.OK_CANCEL_OPTION)
     if (res != JOptionPane.OK_OPTION) return
     thread {
         var failed = 0
-        for (row in sel) {
-            val d = Renamer.dataFromName(NameParser.parse(row.file))
-            val newBase = Renamer.applyPattern(patternField.text, d, row.file.nameWithoutExtension)
+        val targets = HashSet<String>()
+        for ((row, tf) in fields) {
+            val newBase = Renamer.sanitize(tf.text)
+            if (newBase.isBlank()) { failed++; continue }
             if (newBase + "." + row.file.extension == row.file.name) continue
+            if (!targets.add((newBase + "." + row.file.extension).lowercase())) { failed++; continue }
             val renamed = Renamer.rename(row.file, newBase)
             if (renamed != null) {
                 Backup.move(row.file, renamed, backupDir)
                 val idx = rows.indexOf(row)
                 if (idx >= 0) rows[idx] = Row(renamed).also {
-                    it.checked = row.checked; it.tag = row.tag; it.status = Strings.t("done")
+                    it.checked = false; it.tag = row.tag; it.status = Strings.t("done")
                 }
             } else failed++
         }
@@ -690,6 +688,7 @@ fun undoSelected() {
             try {
                 if (Backup.restore(row.file, backupDir)) {
                     row.tag = TagService.read(row.file)
+                    row.checked = false // acted on: drop the check
                     row.status = Strings.t("restored"); restored++
                 }
             } catch (e: Exception) { row.status = "${Strings.t("failed")}: ${e.message}" }

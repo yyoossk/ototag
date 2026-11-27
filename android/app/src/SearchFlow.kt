@@ -40,6 +40,7 @@ object SearchFlow {
         progressLabel: String? = null,
         onSkip: (() -> Unit)? = null,
         onStop: (() -> Unit)? = null,
+        bulk: Boolean = false,
         onPicked: (TagData) -> Unit
     ) {
         // The user can type / edit the search words before the search runs.
@@ -65,7 +66,7 @@ object SearchFlow {
                 val q = input.text.toString().trim()
                 if (q.isBlank()) { onStop?.invoke() }
                 else runSearch(activity, tag, parsed, q, q == autoQuery,
-                    progressLabel, onSkip, onStop, onPicked)
+                    progressLabel, onSkip, onStop, bulk, onPicked)
             }
             .setNegativeButton(Strings.t("cancel")) { _, _ -> onStop?.invoke() }
             .show()
@@ -80,6 +81,7 @@ object SearchFlow {
         progressLabel: String?,
         onSkip: (() -> Unit)?,
         onStop: (() -> Unit)?,
+        bulk: Boolean,
         onPicked: (TagData) -> Unit
     ) {
         val stopped = AtomicBoolean(false)
@@ -171,7 +173,7 @@ object SearchFlow {
                         Toast.makeText(activity, Strings.t("no_results"), Toast.LENGTH_LONG).show()
                         onSkip?.invoke()
                     }
-                } else showChooser(activity, cands, atSongs, itunes, deezer, vgmdb, onSkip, onPicked)
+                } else showChooser(activity, cands, atSongs, itunes, deezer, vgmdb, onSkip, bulk, onPicked)
             }
         }
     }
@@ -257,6 +259,7 @@ object SearchFlow {
         deezer: List<DeezerTrack>,
         vgmdb: List<VgmdbTrack>,
         onSkip: (() -> Unit)?,
+        bulk: Boolean,
         onPicked: (TagData) -> Unit
     ) {
         val options = ArrayList<Opt>()
@@ -354,7 +357,8 @@ object SearchFlow {
             .setTitle(Strings.t("candidates"))
             .setView(listView)
         if (onSkip != null) {
-            builder.setNegativeButton(Strings.t("skip")) { _, _ -> onSkip() }
+            // "Skip" only makes sense mid-run; a single search says Cancel.
+            builder.setNegativeButton(Strings.t(if (bulk) "skip" else "cancel")) { _, _ -> onSkip() }
         } else {
             builder.setNegativeButton(Strings.t("cancel"), null)
         }

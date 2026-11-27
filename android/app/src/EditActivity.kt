@@ -225,6 +225,7 @@ class EditActivity : Activity() {
             runOnUiThread {
                 if (err == null) {
                     Toast.makeText(this, Strings.t("done"), Toast.LENGTH_LONG).show()
+                    setResult(RESULT_OK)
                     finish()
                 } else {
                     Ui.failDialog(this, err!!)

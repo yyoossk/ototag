@@ -363,9 +363,12 @@ class MainActivity : Activity() {
     private fun toast(msg: String) =
         Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
 
+    private var lastEdited: Item? = null
+
     private fun editSelected() {
         val sel = checkedItems()
         if (sel.size != 1) { toast(Strings.t("select_one")); return }
+        lastEdited = sel[0]
         val i = Intent(this, EditActivity::class.java)
         i.putExtra("index", Items.list.indexOf(sel[0]))
         startActivityForResult(i, REQ_EDIT)
@@ -389,7 +392,8 @@ class MainActivity : Activity() {
                     this, item.tag, parsed,
                     progressLabel = "${idx + 1} / ${sel.size}\n${item.name}",
                     onSkip = { applyNext(sel, idx + 1) },
-                    onStop = { adapter.notifyDataSetChanged() }
+                    onStop = { adapter.notifyDataSetChanged() },
+                    bulk = sel.size > 1
                 ) { newTag ->
                     thread {
                         var ok = false
@@ -520,40 +524,45 @@ class MainActivity : Activity() {
     private fun renameSelected() {
         val sel = checkedItems()
         if (sel.isEmpty()) { toast(Strings.t("select_some")); return }
-        val patternInput = EditText(this).apply { setText("%track% - %title%") }
-        val preview = TextView(this).apply { setPadding(40, 10, 40, 0) }
-        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 20, 40, 0) }
-        layout.addView(TextView(this).apply { text = Strings.t("pattern") })
-        layout.addView(patternInput)
-        layout.addView(preview)
-        // Renaming only renames the file: the pattern works on the values
-        // the file name itself carries, never on tag contents.
-        fun nameData(item: Item) = Renamer.dataFromName(NameParser.parse(java.io.File(item.name)))
-        fun updatePreview() {
-            val sb = StringBuilder()
-            for (item in sel) {
-                val newBase = Renamer.applyPattern(patternInput.text.toString(), nameData(item), item.name.substringBeforeLast('.'))
-                sb.append(item.name).append("  ->  ").append(newBase).append('.').append(item.ext).append('\n')
-            }
-            preview.text = sb.toString()
+        // Plain file-name editing: each checked file gets a text field with
+        // its current name (extension fixed), nothing else. No patterns.
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(10), dp(20), 0)
         }
-        patternInput.addTextChangedListener(object : android.text.TextWatcher {
-            override fun afterTextChanged(s: android.text.Editable?) { updatePreview() }
-            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-        })
-        updatePreview()
+        val fields = ArrayList<Pair<Item, EditText>>()
+        for (item in sel) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val et = EditText(this).apply {
+                setText(item.name.substringBeforeLast('.'))
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            row.addView(et)
+            row.addView(TextView(this).apply { text = "." + item.ext; setTextColor(Ui.SUB) })
+            layout.addView(row)
+            fields.add(item to et)
+        }
+        val scroll = android.widget.ScrollView(this).apply { addView(layout) }
         AlertDialog.Builder(this)
-            .setTitle(Strings.t("rename_preview"))
-            .setView(layout)
+            .setTitle(Strings.t("rename"))
+            .setView(scroll)
             .setPositiveButton(Strings.t("apply")) { _, _ ->
                 var failed = 0
-                for (item in sel) {
-                    val newBase = Renamer.applyPattern(patternInput.text.toString(), nameData(item), item.name.substringBeforeLast('.'))
+                val targets = HashSet<String>()
+                for ((item, et) in fields) {
+                    val newBase = Renamer.sanitize(et.text.toString())
+                    if (newBase.isBlank()) { failed++; continue }
                     val newName = newBase + "." + item.ext
                     if (newName == item.name) continue
-                    if (Items.list.any { it !== item && it.name == newName }) { failed++; continue }
+                    if (!targets.add(newName.lowercase()) ||
+                        Items.list.any { it !== item && it.name.equals(newName, ignoreCase = true) }) {
+                        failed++; continue
+                    }
                     if (!SafStore.rename(this, item, newName)) failed++
+                    else item.checked = false // acted on: drop the check
                 }
                 adapter.notifyDataSetChanged()
                 toast(if (failed == 0) Strings.t("done") else "${Strings.t("failed")}: $failed")
@@ -573,6 +582,7 @@ class MainActivity : Activity() {
                     if (Backup.restore(item.local!!, SafStore.backupDir(this))) {
                         SafStore.writeBack(this, item)
                         item.tag = TagService.read(item.local!!)
+                        item.checked = false // acted on: drop the check
                         restored++
                     }
                 } catch (e: Exception) { item.error = e.message }
@@ -669,7 +679,11 @@ class MainActivity : Activity() {
                 val uri = data?.data ?: return
                 pendingImagePick?.invoke(uri); pendingImagePick = null
             }
-            REQ_EDIT -> adapter.notifyDataSetChanged()
+            REQ_EDIT -> {
+                // Saved in the editor: the file was acted on, drop its check.
+                if (resultCode == RESULT_OK) lastEdited?.checked = false
+                adapter.notifyDataSetChanged()
+            }
         }
     }
 
