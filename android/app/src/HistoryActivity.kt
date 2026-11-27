@@ -16,6 +16,8 @@ class HistoryActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setTheme(if (Ui.dark) android.R.style.Theme_Material
+            else android.R.style.Theme_Material_Light)
         title = Strings.t("history")
 
         val scroll = ScrollView(this).apply { setBackgroundColor(Ui.BG) }

@@ -1,0 +1,26 @@
+{
+ "status": "ok",
+ "results": [
+  {
+   "id": "9c0b2f4e-1111-4000-8000-000000000001",
+   "score": 0.98,
+   "recordings": [
+    {
+     "id": "9362e22b-9a1b-4621-8b6d-a0420f24a784"
+    }
+   ]
+  },
+  {
+   "id": "9c0b2f4e-2222-4000-8000-000000000002",
+   "score": 0.87,
+   "recordings": [
+    {
+     "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+    },
+    {
+     "id": "9362e22b-9a1b-4621-8b6d-a0420f24a784"
+    }
+   ]
+  }
+ ]
+}

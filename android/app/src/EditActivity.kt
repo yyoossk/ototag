@@ -32,6 +32,8 @@ class EditActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        setTheme(if (Ui.dark) android.R.style.Theme_Material
+            else android.R.style.Theme_Material_Light)
         val idx = intent.getIntExtra("index", -1)
         item = Items.list.getOrNull(idx)
         val it = item ?: run { finish(); return }
@@ -76,7 +78,11 @@ class EditActivity : Activity() {
         root.addView(TextView(this).apply { text = Strings.t("cover"); setTextColor(Ui.SUB) })
         coverView = ImageView(this).apply {
             layoutParams = LinearLayout.LayoutParams(360, 360)
-            setOnClickListener { pickImage() }
+            // Tap: zoom the cover when there is one, otherwise pick an image.
+            setOnClickListener {
+                val bytes = coverBytes ?: item?.tag?.cover
+                if (bytes != null) showCoverZoom(bytes) else pickImage()
+            }
         }
         root.addView(coverView)
         val coverBtns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -122,7 +128,7 @@ class EditActivity : Activity() {
             setOnClickListener {
                 val cur = collectFields()
                 val parsed = NameParser.parse(File(itemName))
-                SearchFlow.start(this@EditActivity, cur, parsed) { picked ->
+                SearchFlow.start(this@EditActivity, cur, parsed, localFile = item?.local) { picked ->
                     fillFields(picked, fromSearch = true)
                     // clear centred confirmation of what was filled in from the candidate
                     val msg = buildString {
@@ -266,6 +272,20 @@ class EditActivity : Activity() {
             isrc = v("isrc"), lyrics = lyricsInput?.text?.toString() ?: "",
             mbRecordingId = pendingMbIds.first, mbReleaseId = pendingMbIds.second,
             cover = if (coverRemoved) null else coverBytes)
+    }
+
+    /** Full-screen view of the current cover art; tap anywhere to close. */
+    private fun showCoverZoom(bytes: ByteArray) {
+        val bmp = try { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
+            catch (e: Exception) { null } ?: return
+        val iv = ImageView(this).apply {
+            setImageBitmap(bmp)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setBackgroundColor(Ui.BG)
+        }
+        val dlg = AlertDialog.Builder(this).setView(iv).create()
+        iv.setOnClickListener { dlg.dismiss() }
+        dlg.show()
     }
 
     private fun pickImage() {

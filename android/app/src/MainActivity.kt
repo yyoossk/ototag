@@ -32,13 +32,23 @@ class MainActivity : Activity() {
     private var playingItem: Item? = null
     /** List filter: 0 = all, 1 = no tags, 2 = no cover. */
     private var filterMode: Int = 0
+    /** List sort: 0 = file name, 1 = title, 2 = album, 3 = artist. */
+    private var sortMode: Int = 0
     private val thumbExecutor = java.util.concurrent.Executors.newFixedThreadPool(2)
 
-    /** The items the list currently shows, after the filter. */
-    private fun shownItems(): List<Item> = when (filterMode) {
-        1 -> Items.list.filter { it.tag == null || it.tag!!.isBasicallyEmpty() }
-        2 -> Items.list.filter { it.tag?.cover == null }
-        else -> Items.list
+    /** The items the list currently shows, after the filter and sort. */
+    private fun shownItems(): List<Item> {
+        val filtered = when (filterMode) {
+            1 -> Items.list.filter { it.tag == null || it.tag!!.isBasicallyEmpty() }
+            2 -> Items.list.filter { it.tag?.cover == null }
+            else -> Items.list
+        }
+        return when (sortMode) {
+            1 -> filtered.sortedBy { (it.tag?.title?.ifBlank { null } ?: it.name).lowercase() }
+            2 -> filtered.sortedBy { (it.tag?.album?.ifBlank { null } ?: it.name).lowercase() }
+            3 -> filtered.sortedBy { (it.tag?.artist?.ifBlank { null } ?: it.name).lowercase() }
+            else -> filtered.sortedBy { it.name.lowercase() }
+        }
     }
 
     /** Loads the per-source on/off switches into the core search flags. */
@@ -76,6 +86,18 @@ class MainActivity : Activity() {
                 layout.addView(this)
             }
         }
+        layout.addView(TextView(this).apply { text = Strings.t("acoustid_key") })
+        val acoustidInput = EditText(this).apply {
+            setText(prefs.getString("acoustid_key", "") ?: "")
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+        }
+        layout.addView(acoustidInput)
+        val darkBox = CheckBox(this).apply {
+            text = Strings.t("dark_mode")
+            isChecked = Ui.dark
+        }
+        layout.addView(darkBox)
         AlertDialog.Builder(this)
             .setTitle(Strings.t("settings"))
             .setView(layout)
@@ -83,8 +105,12 @@ class MainActivity : Activity() {
                 val e = prefs.edit()
                 e.putInt("cover_cap", caps[spinner.selectedItemPosition])
                 sourceKeys.forEachIndexed { i, (key, _) -> e.putBoolean(key, boxes[i].isChecked) }
+                e.putString("acoustid_key", acoustidInput.text.toString().trim())
+                val darkChanged = darkBox.isChecked != Ui.dark
+                if (darkChanged) e.putBoolean("dark", darkBox.isChecked)
                 e.apply()
                 loadSourcePrefs()
+                if (darkChanged) recreate()
             }
             .setNegativeButton(Strings.t("cancel"), null)
             .show()
@@ -281,6 +307,13 @@ class MainActivity : Activity() {
         // Hide the system title bar: the graphical in-layout header is the only app name.
         actionBar?.hide()
         Strings.lang = Strings.resolve(prefs.getString("lang", null), Locale.getDefault().toLanguageTag())
+        // Dark palette: the saved choice wins; until then follow the system.
+        val systemDark = (resources.configuration.uiMode and
+            android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
+            android.content.res.Configuration.UI_MODE_NIGHT_YES
+        Ui.dark = if (prefs.contains("dark")) prefs.getBoolean("dark", false) else systemDark
+        setTheme(if (Ui.dark) android.R.style.Theme_Material
+            else android.R.style.Theme_Material_Light)
         ItunesClient.country = Locale.getDefault().country.ifBlank { "JP" }
         loadSourcePrefs()
         // Housekeeping off the UI thread: prune old backups, drop stale copies.
@@ -300,7 +333,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(16), dp(4), dp(12), dp(4))
-            setBackgroundColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(Ui.CARD)
         }
         header.addView(TextView(this).apply {
             text = "♪ OtoTag ♫"
@@ -399,6 +432,21 @@ class MainActivity : Activity() {
             override fun onNothingSelected(p: AdapterView<*>) {}
         }
         filterRow.addView(filterSpinner)
+        val sortSpinner = Spinner(this)
+        sortSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
+            listOf(Strings.t("sort_name"), Strings.t("sort_title"),
+                Strings.t("sort_album"), Strings.t("sort_artist")))
+        sortSpinner.setSelection(sortMode)
+        sortSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>, v: View?, pos: Int, id: Long) {
+                if (pos != sortMode) { sortMode = pos; adapter.notifyDataSetChanged() }
+            }
+            override fun onNothingSelected(p: AdapterView<*>) {}
+        }
+        filterRow.addView(TextView(this).apply {
+            text = Strings.t("sort"); setTextColor(Ui.SUB); setPadding(dp(12), 0, 0, 0)
+        })
+        filterRow.addView(sortSpinner)
         root.addView(filterRow)
 
         adapter = ItemAdapter()
@@ -416,7 +464,7 @@ class MainActivity : Activity() {
         val bar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(dp(8), dp(6), dp(2), dp(8))
-            setBackgroundColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(Ui.CARD)
         }
         fun barBtn(label: String, color: Int, fn: () -> Unit) {
             bar.addView(Button(this).apply {
@@ -484,6 +532,7 @@ class MainActivity : Activity() {
                 val parsed = NameParser.parse(File(item.name))
                 SearchFlow.start(
                     this, item.tag, parsed,
+                    localFile = item.local,
                     progressLabel = "${idx + 1} / ${sel.size}\n${item.name}",
                     onSkip = { applyNext(sel, idx + 1) },
                     onStop = { adapter.notifyDataSetChanged() },
@@ -684,18 +733,45 @@ class MainActivity : Activity() {
         if (sel.isEmpty()) { toast(Strings.t("select_some")); return }
         AlertDialog.Builder(this)
             .setMessage(Strings.t("confirm_undo"))
-            .setPositiveButton(Strings.t("undo")) { _, _ -> doUndo(sel) }
+            .setPositiveButton(Strings.t("undo")) { _, _ -> pickUndoGeneration(sel) }
             .setNegativeButton(Strings.t("cancel"), null)
             .show()
     }
 
-    private fun doUndo(sel: List<Item>) {
+    /** With several backup generations, let the user choose which one. */
+    private fun pickUndoGeneration(sel: List<Item>) {
+        thread {
+            val gens = sortedSetOf<Long>(reverseOrder())
+            for (item in sel) {
+                try {
+                    SafStore.ensureLocal(this, item)
+                    gens.addAll(Backup.generations(item.local!!, SafStore.backupDir(this)))
+                } catch (e: Exception) { }
+            }
+            val list = gens.take(5)
+            runOnUiThread {
+                if (list.size <= 1) { doUndo(sel, null); return@runOnUiThread }
+                val fmt = java.text.SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.getDefault())
+                val labels = list.map { fmt.format(java.util.Date(it)) }.toTypedArray()
+                AlertDialog.Builder(this)
+                    .setTitle(Strings.t("pick_backup"))
+                    .setItems(labels) { _, which -> doUndo(sel, list[which]) }
+                    .setNegativeButton(Strings.t("cancel"), null)
+                    .show()
+            }
+        }
+    }
+
+    private fun doUndo(sel: List<Item>, generation: Long?) {
         thread {
             var restored = 0
             for (item in sel) {
                 try {
                     SafStore.ensureLocal(this, item)
-                    if (Backup.restore(item.local!!, SafStore.backupDir(this))) {
+                    val ok = if (generation == null)
+                        Backup.restore(item.local!!, SafStore.backupDir(this))
+                    else Backup.restoreAt(item.local!!, SafStore.backupDir(this), generation)
+                    if (ok) {
                         SafStore.writeBack(this, item)
                         item.tag = TagService.read(item.local!!)
                         item.checked = false // acted on: drop the check

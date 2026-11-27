@@ -41,6 +41,7 @@ object SearchFlow {
         activity: Activity,
         tag: TagData?,
         parsed: ParsedName?,
+        localFile: java.io.File? = null,
         progressLabel: String? = null,
         onSkip: (() -> Unit)? = null,
         onStop: (() -> Unit)? = null,
@@ -69,7 +70,7 @@ object SearchFlow {
             .setPositiveButton(Strings.t("search")) { _, _ ->
                 val q = input.text.toString().trim()
                 if (q.isBlank()) { onStop?.invoke() }
-                else runSearch(activity, tag, parsed, q, q == autoQuery,
+                else runSearch(activity, tag, parsed, localFile, q, q == autoQuery,
                     progressLabel, onSkip, onStop, bulk, onPicked)
             }
             .setNegativeButton(Strings.t("cancel")) { _, _ -> onStop?.invoke() }
@@ -80,6 +81,7 @@ object SearchFlow {
         activity: Activity,
         tag: TagData?,
         parsed: ParsedName?,
+        localFile: java.io.File?,
         query: String,
         auto: Boolean,
         progressLabel: String?,
@@ -95,6 +97,7 @@ object SearchFlow {
         }
         thread {
             val found = LinkedHashMap<String, MbCandidate>()
+            val fpCands = java.util.Collections.synchronizedList(ArrayList<MbCandidate>())
             var mbError: Exception? = null
             var atSongs: List<AtSong> = emptyList()
             var itunes: List<ItunesTrack> = emptyList()
@@ -203,13 +206,29 @@ object SearchFlow {
                     }
                 } catch (e: Exception) { emptyList() }
             })
+            // Fingerprint search (AcoustID) runs alongside the text sources
+            // when the user has entered their free API key.
+            val fpKey = activity.getSharedPreferences("ototag", android.content.Context.MODE_PRIVATE)
+                .getString("acoustid_key", "")?.trim() ?: ""
+            if (fpKey.isNotBlank() && localFile != null) jobs.add(thread {
+                try {
+                    val (fp, dur) = Fingerprinter.fingerprint(localFile) ?: return@thread
+                    val ids = com.yyoo.ototag.core.AcoustIdClient
+                        .lookupRecordingIds(fp, dur, fpKey)
+                    for (id in ids.take(5)) {
+                        try {
+                            MbClient.lookupRecording(id)?.let { fpCands.add(it) }
+                        } catch (e: Exception) { }
+                    }
+                } catch (e: Exception) { }
+            })
             jobs.forEach { it.join() }
             if (stopped.get()) return@thread
             val cands = found.values.toList()
             activity.runOnUiThread {
                 if (stopped.get()) return@runOnUiThread
                 progress.dismiss()
-                if (cands.isEmpty() && atSongs.isEmpty() && itunes.isEmpty() &&
+                if (cands.isEmpty() && fpCands.isEmpty() && atSongs.isEmpty() && itunes.isEmpty() &&
                     deezer.isEmpty() && vgmdb.isEmpty() && audius.isEmpty() && ndl.isEmpty()) {
                     if (mbError != null) {
                         Ui.failDialog(activity,
@@ -219,7 +238,7 @@ object SearchFlow {
                         Toast.makeText(activity, Strings.t("no_results"), Toast.LENGTH_LONG).show()
                         onSkip?.invoke()
                     }
-                } else showChooser(activity, cands, atSongs, itunes, deezer, vgmdb, audius, ndl, onSkip, bulk, onPicked)
+                } else showChooser(activity, tag, cands, fpCands, atSongs, itunes, deezer, vgmdb, audius, ndl, onSkip, bulk, onPicked)
             }
         }
     }
@@ -256,9 +275,14 @@ object SearchFlow {
     private class Opt(val title: String, val sub: String, val iconUrl: String?, val build: () -> TagData)
 
     // Candidate cover thumbnails: cached for the whole session and decoded
-    // at thumbnail size, so reopening a search shows them instantly.
+    // at thumbnail size, so reopening a search shows them instantly. The
+    // cache is capped (LRU, 120 entries) so a long session cannot grow
+    // the app's memory without bound.
     private val iconCache = java.util.Collections.synchronizedMap(
-        HashMap<String, android.graphics.Bitmap>())
+        object : LinkedHashMap<String, android.graphics.Bitmap>(64, 0.75f, true) {
+            override fun removeEldestEntry(
+                e: MutableMap.MutableEntry<String, android.graphics.Bitmap>): Boolean = size > 120
+        })
     private val iconLoading = java.util.Collections.synchronizedSet(HashSet<String>())
     private val iconWaiters = java.util.Collections.synchronizedMap(
         HashMap<String, MutableList<() -> Unit>>())
@@ -307,7 +331,9 @@ object SearchFlow {
 
     private fun showChooser(
         activity: Activity,
+        currentTag: TagData?,
         cands: List<MbCandidate>,
+        fpCands: List<MbCandidate>,
         atSongs: List<AtSong>,
         itunes: List<ItunesTrack>,
         deezer: List<DeezerTrack>,
@@ -319,6 +345,22 @@ object SearchFlow {
         onPicked: (TagData) -> Unit
     ) {
         val options = ArrayList<Opt>()
+        // Fingerprint matches first: they identify this exact recording.
+        for (c in fpCands) {
+            if (c.releases.isEmpty()) {
+                options.add(Opt(c.title, "${c.artist} · AcoustID", null) {
+                    TagData(title = c.title, artist = c.artist, mbRecordingId = c.recordingId)
+                })
+            }
+            for (r in c.releases) {
+                val yr = r.date.take(4)
+                val meta = listOf(yr, r.country).filter { it.isNotBlank() }.joinToString(", ")
+                options.add(Opt(c.title, "${c.artist} — ${r.title} ($meta) · AcoustID",
+                    thumbUrl(MbClient.coverUrl(r.id))) {
+                    MbClient.buildTag(c, r)
+                })
+            }
+        }
         for (c in cands) {
             if (c.releases.isEmpty()) {
                 options.add(Opt(c.title, c.artist, null) {
@@ -438,10 +480,10 @@ object SearchFlow {
             val progress = showProgress(activity, Strings.t("working"), null, null)
             thread {
                 try {
-                    val tag = options[which].build()
+                    val built = options[which].build()
                     activity.runOnUiThread {
                         progress.dismiss()
-                        onPicked(tag)
+                        showDiff(activity, currentTag, built, onPicked, onSkip)
                     }
                 } catch (e: Exception) {
                     activity.runOnUiThread {
@@ -453,5 +495,29 @@ object SearchFlow {
             }
         }
         dlg.show()
+    }
+
+    /**
+     * Pre-apply preview: what the chosen candidate will change versus
+     * the file's current tag. Applying proceeds to onPicked with the raw
+     * candidate; the caller still does its own partial merge.
+     */
+    private fun showDiff(
+        activity: Activity,
+        currentTag: TagData?,
+        built: TagData,
+        onPicked: (TagData) -> Unit,
+        onSkip: (() -> Unit)?
+    ) {
+        val old = currentTag ?: TagData()
+        val merged = if (built.partial) built.mergedOver(old) else built
+        val lines = com.yyoo.ototag.core.TagDiff.lines(old, merged)
+        AlertDialog.Builder(activity)
+            .setTitle(Strings.t("diff_title"))
+            .setMessage(if (lines.isEmpty()) Strings.t("no_change")
+                else lines.joinToString("\n"))
+            .setPositiveButton(Strings.t("apply")) { _, _ -> onPicked(built) }
+            .setNegativeButton(Strings.t("cancel")) { _, _ -> onSkip?.invoke() }
+            .show()
     }
 }

@@ -15,6 +15,7 @@ fun main() {
     MbClient.fetcher = { url ->
         val td = File("testdata")
         when {
+            url.contains("inc=artist-credits") -> File(td, "recording-lookup.json").readBytes()
             url.contains("/ws/2/recording/") -> File(td, "search.json").readBytes()
             url.contains("/ws/2/release/") -> File(td, "release.json").readBytes()
             url.contains("coverartarchive.org") -> File(td, "cover.jpg").readBytes()
@@ -340,6 +341,66 @@ fun main() {
     check("releases parsed", rels.size == 2 && rels[0].tag == "20261127-2346" &&
         rels[0].publishedAt == "2026-11-27" && rels[0].body.contains("Musixmatch") &&
         rels[1].tag == "20261127-2335", rels.size.toString())
+
+    // --- AcoustID lookup + recording lookup (fixtures) ---
+    AcoustIdClient.fetcher = { url ->
+        check("acoustid url", url.contains("api.acoustid.org/v2/lookup") &&
+            url.contains("meta=recordingids") && url.contains("duration=215"), url)
+        File("testdata/acoustid-lookup.json").readBytes()
+    }
+    val aids = AcoustIdClient.lookupRecordingIds("AQADtEqSJEk", 215, "TESTKEY")
+    check("acoustid ids", aids == listOf(
+        "9362e22b-9a1b-4621-8b6d-a0420f24a784",
+        "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), aids.toString())
+    MbClient.fetcher = { url ->
+        when {
+            url.contains("inc=artist-credits") -> File("testdata/recording-lookup.json").readBytes()
+            url.contains("/ws/2/recording/") -> File("testdata/search.json").readBytes()
+            url.contains("/ws/2/release/") -> File("testdata/release.json").readBytes()
+            url.contains("coverartarchive.org") -> File("testdata/cover.jpg").readBytes()
+            else -> throw IllegalStateException("unexpected url $url")
+        }
+    }
+    val looked = MbClient.lookupRecording("9362e22b-9a1b-4621-8b6d-a0420f24a784")
+    check("mb lookup title", looked?.title == "Lemon", looked?.title ?: "null")
+    check("mb lookup releases", (looked?.releases?.size ?: 0) > 0,
+        (looked?.releases?.size ?: -1).toString())
+    Strings.lang = "ja"
+    check("acoustid strings", Strings.t("acoustid_key") == "AcoustID APIキー" &&
+        Strings.t("fp_search") == "指紋で検索")
+
+    // --- backup generations + restore-at (item: choose which to restore) ---
+    run {
+        val dir = File("testwork/gens"); dir.deleteRecursively(); dir.mkdirs()
+        val bdir = File("testwork/genbackups"); bdir.deleteRecursively(); bdir.mkdirs()
+        val song = File(dir, "song.mp3"); song.writeText("v3")
+        val first = Backup.backup(song, bdir)
+        val folder = first.parentFile
+        File(folder, "1000_song.mp3").writeText("v1")
+        File(folder, "2000_song.mp3").writeText("v2")
+        val gens = Backup.generations(song, bdir)
+        check("generations", gens.size == 3 && gens[0] > 2000L &&
+            gens[1] == 2000L && gens[2] == 1000L, gens.toString())
+        check("restoreAt 2000", Backup.restoreAt(song, bdir, 2000L) &&
+            song.readText() == "v2", song.readText())
+        check("restoreAt 1500", Backup.restoreAt(song, bdir, 1500L) &&
+            song.readText() == "v1", song.readText())
+        check("restoreAt 500 none", !Backup.restoreAt(song, bdir, 500L))
+    }
+
+    // --- tag diff preview lines ---
+    run {
+        Strings.lang = "ja"
+        val old = TagData(title = "Old", artist = "A", album = "X", track = "1")
+        val new = TagData(title = "New", artist = "A", album = "X", track = "3",
+            trackTotal = "12", cover = byteArrayOf(1, 2, 3))
+        val lines = TagDiff.lines(old, new)
+        check("diff lines", lines.size == 3 &&
+            lines.any { it.contains("Old") && it.contains("New") } &&
+            lines.any { it.startsWith(Strings.t("track")) } &&
+            lines.any { it.startsWith(Strings.t("cover")) }, lines.toString())
+        check("diff none", TagDiff.lines(old, old.copy()).isEmpty())
+    }
 
     println(if (failures == 0) "ALL PASS" else "FAILURES: $failures")
     kotlin.system.exitProcess(if (failures == 0) 0 else 1)

@@ -93,39 +93,52 @@ object MbClient {
         SearchCache.get<List<MbCandidate>>(url)?.let { return it }
         val root = JsonParser(String(get(url), Charsets.UTF_8)).parse().asObj()
         val out = ArrayList<MbCandidate>()
-        for (r in root["recordings"].asArr()) {
-            val ro = r.asObj()
-            val artistCredit = ro["artist-credit"].asArr().joinToString("") { ac ->
-                val aco = ac.asObj()
-                (aco["name"].asStr()) + (aco["joinphrase"].asStr())
-            }
-            val releases = ArrayList<MbReleaseRef>()
-            for (rel in ro["releases"].asArr()) {
-                val relo = rel.asObj()
-                var tPos = 0; var dPos = 0; var tTotal = 0
-                for (m in relo["media"].asArr()) {
-                    val mo = m.asObj()
-                    for (tr in mo["track"].asArr()) {
-                        val tro = tr.asObj()
-                        if (tro["recording"].asObj()["id"].asStr() == ro["id"].asStr() ||
-                            tro["title"].asStr() == ro["title"].asStr()) {
-                            // search results carry "number" (string), lookups carry "position"
-                            tPos = tro["position"].asInt().takeIf { it > 0 }
-                                ?: tro["number"].asStr().toIntOrNull() ?: 0
-                            dPos = mo["position"].asInt()
-                            tTotal = mo["track-count"].asInt()
-                        }
-                    }
-                }
-                releases.add(MbReleaseRef(
-                    relo["id"].asStr(), relo["title"].asStr(), relo["date"].asStr(),
-                    relo["country"].asStr(), relo["track-count"].asInt(), tPos, dPos, tTotal))
-            }
-            out.add(MbCandidate(ro["id"].asStr(), ro["title"].asStr(), artistCredit,
-                ro["score"].asInt(), (ro["length"] as? Double)?.toLong() ?: 0, releases))
-        }
+        for (r in root["recordings"].asArr()) out.add(parseCandidate(r.asObj()))
         if (out.isNotEmpty()) SearchCache.put(url, out)
         return out
+    }
+
+    /** One recording object (search result element or lookup root). */
+    private fun parseCandidate(ro: Map<String, Any?>): MbCandidate {
+        val artistCredit = ro["artist-credit"].asArr().joinToString("") { ac ->
+            val aco = ac.asObj()
+            (aco["name"].asStr()) + (aco["joinphrase"].asStr())
+        }
+        val releases = ArrayList<MbReleaseRef>()
+        for (rel in ro["releases"].asArr()) {
+            val relo = rel.asObj()
+            var tPos = 0; var dPos = 0; var tTotal = 0
+            for (m in relo["media"].asArr()) {
+                val mo = m.asObj()
+                for (tr in mo["track"].asArr()) {
+                    val tro = tr.asObj()
+                    if (tro["recording"].asObj()["id"].asStr() == ro["id"].asStr() ||
+                        tro["title"].asStr() == ro["title"].asStr()) {
+                        // search results carry "number" (string), lookups carry "position"
+                        tPos = tro["position"].asInt().takeIf { it > 0 }
+                            ?: tro["number"].asStr().toIntOrNull() ?: 0
+                        dPos = mo["position"].asInt()
+                        tTotal = mo["track-count"].asInt()
+                    }
+                }
+            }
+            releases.add(MbReleaseRef(
+                relo["id"].asStr(), relo["title"].asStr(), relo["date"].asStr(),
+                relo["country"].asStr(), relo["track-count"].asInt(), tPos, dPos, tTotal))
+        }
+        return MbCandidate(ro["id"].asStr(), ro["title"].asStr(), artistCredit,
+            ro["score"].asInt(), (ro["length"] as? Double)?.toLong() ?: 0, releases)
+    }
+
+    /** Recording lookup by MBID (used by the AcoustID fingerprint flow). */
+    fun lookupRecording(recordingId: String): MbCandidate? {
+        val url = "$mbBase/ws/2/recording/$recordingId?inc=artist-credits+releases&fmt=json"
+        SearchCache.get<MbCandidate>(url)?.let { return it }
+        val root = JsonParser(String(get(url), Charsets.UTF_8)).parse().asObj()
+        if (root["id"].asStr() != recordingId) return null
+        val cand = parseCandidate(root)
+        SearchCache.put(url, cand)
+        return cand
     }
 
     /** Cover Art Archive thumbnail URL for a release (front-250). */

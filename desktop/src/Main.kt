@@ -14,12 +14,16 @@ import javax.swing.*
 import javax.swing.table.AbstractTableModel
 import kotlin.concurrent.thread
 
+/** Dark palette switch (settings prop "dark"; applies from startup). */
+var darkMode = false
+
 /** "No image" placeholder icon for rows without cover art. */
 val noCoverIcon: ImageIcon by lazy {
     val img = java.awt.image.BufferedImage(40, 40, java.awt.image.BufferedImage.TYPE_INT_RGB)
     val g = img.createGraphics()
-    g.color = java.awt.Color(233, 229, 242); g.fillRect(0, 0, 40, 40)
-    g.color = java.awt.Color(167, 155, 203)
+    g.color = if (darkMode) java.awt.Color(46, 39, 80) else java.awt.Color(233, 229, 242)
+    g.fillRect(0, 0, 40, 40)
+    g.color = if (darkMode) java.awt.Color(122, 111, 163) else java.awt.Color(167, 155, 203)
     g.font = java.awt.Font("SansSerif", java.awt.Font.BOLD, 24)
     val fm = g.fontMetrics; val s = "♪"
     g.drawString(s, (40 - fm.stringWidth(s)) / 2, (40 - fm.height) / 2 + fm.ascent)
@@ -66,10 +70,21 @@ val rows = mutableListOf<Row>()
 /** List filter: 0 = all, 1 = no tags, 2 = no cover. */
 var filterMode = 0
 
-fun shownRows(): List<Row> = when (filterMode) {
-    1 -> rows.filter { it.tag == null || it.tag!!.isBasicallyEmpty() }
-    2 -> rows.filter { it.tag?.cover == null }
-    else -> rows
+/** List sort: 0 = file name, 1 = title, 2 = album, 3 = artist. */
+var sortMode = 0
+
+fun shownRows(): List<Row> {
+    val filtered = when (filterMode) {
+        1 -> rows.filter { it.tag == null || it.tag!!.isBasicallyEmpty() }
+        2 -> rows.filter { it.tag?.cover == null }
+        else -> rows
+    }
+    return when (sortMode) {
+        1 -> filtered.sortedBy { (it.tag?.title?.ifBlank { null } ?: it.file.name).lowercase() }
+        2 -> filtered.sortedBy { (it.tag?.album?.ifBlank { null } ?: it.file.name).lowercase() }
+        3 -> filtered.sortedBy { (it.tag?.artist?.ifBlank { null } ?: it.file.name).lowercase() }
+        else -> filtered.sortedBy { it.file.name.lowercase() }
+    }
 }
 
 /** The embedded-cover size cap from the settings (0 = no limit, the default). */
@@ -200,9 +215,30 @@ fun progressDialog(message: String, label: String?, onCancel: (() -> Unit)?): JD
     return dlg
 }
 
+/** Fingerprint via the bundled fpcalc.exe (placed next to the jar). */
+fun fingerprintViaFpcalc(file: File): Pair<String, Int>? {
+    val jarDir = try {
+        File(object {}.javaClass.protectionDomain.codeSource.location.toURI()).parentFile
+    } catch (e: Exception) { null }
+    val exe = listOfNotNull(jarDir?.let { File(it, "fpcalc.exe") }, File("fpcalc.exe"))
+        .firstOrNull { it.isFile } ?: return null
+    return try {
+        val proc = ProcessBuilder(exe.absolutePath, "-json", file.absolutePath)
+            .redirectErrorStream(true).start()
+        val out = proc.inputStream.readBytes().toString(Charsets.UTF_8)
+        if (!proc.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)) {
+            proc.destroyForcibly(); return null
+        }
+        val root = JsonParser(out).parse().asObj()
+        val fp = root["fingerprint"].asStr()
+        val dur = (root["duration"] as? Double)?.toInt() ?: 0
+        if (fp.isBlank()) null else fp to dur
+    } catch (e: Exception) { null }
+}
+
 /** Candidate chooser shared by search-apply and the edit dialog. */
 fun searchAndPick(
-    tag: TagData?, parsed: ParsedName?, progressLabel: String? = null,
+    tag: TagData?, parsed: ParsedName?, localFile: File? = null, progressLabel: String? = null,
     onSkip: (() -> Unit)? = null, onStop: (() -> Unit)? = null,
     bulk: Boolean = false,
     onPicked: (TagData) -> Unit
@@ -232,9 +268,22 @@ fun searchAndPick(
         var vgmdb: List<VgmdbTrack> = emptyList()
         var audius: List<AudiusTrack> = emptyList()
         var ndl: List<NdlRecord> = emptyList()
+        val fpCands = java.util.Collections.synchronizedList(ArrayList<MbCandidate>())
         // All enabled sources are queried in parallel; the results are
         // still presented in the fixed source order afterwards.
         val jobs = ArrayList<Thread>()
+        // Fingerprint search (AcoustID) when the user has entered their key.
+        val fpKey = loadProps().getProperty("acoustid_key")?.trim() ?: ""
+        if (fpKey.isNotBlank() && localFile != null) jobs.add(thread {
+            try {
+                val (fp, dur) = fingerprintViaFpcalc(localFile) ?: return@thread
+                val ids = AcoustIdClient.lookupRecordingIds(fp, dur, fpKey)
+                for (id in ids.take(5)) {
+                    try { MbClient.lookupRecording(id)?.let { fpCands.add(it) } }
+                    catch (e: Exception) { }
+                }
+            } catch (e: Exception) { }
+        })
         if (SearchSources.mb) jobs.add(thread {
             try {
                 if (!auto) {
@@ -339,7 +388,7 @@ fun searchAndPick(
         SwingUtilities.invokeLater {
             progress?.dispose()
             if (stopped.get()) return@invokeLater
-            if (cands.isEmpty() && atSongs.isEmpty() && itunes.isEmpty() &&
+            if (cands.isEmpty() && fpCands.isEmpty() && atSongs.isEmpty() && itunes.isEmpty() &&
                 deezer.isEmpty() && vgmdb.isEmpty() && audius.isEmpty() && ndl.isEmpty()) {
                 if (mbError != null) { fail("${mbError.javaClass.simpleName}: ${mbError.message}"); onStop?.invoke() }
                 else { info(Strings.t("no_results")); onSkip?.invoke() }
@@ -348,6 +397,21 @@ fun searchAndPick(
             fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             class DlgOpt(val title: String, val sub: String, val iconUrl: String?, val build: () -> TagData)
             val options = ArrayList<DlgOpt>()
+            // Fingerprint matches first: they identify this exact recording.
+            for (c in fpCands) {
+                if (c.releases.isEmpty()) {
+                    options.add(DlgOpt(c.title, "${c.artist} · AcoustID", null) {
+                        TagData(title = c.title, artist = c.artist, mbRecordingId = c.recordingId)
+                    })
+                }
+                for (r in c.releases) {
+                    val meta = listOf(r.date.take(4), r.country).filter { it.isNotBlank() }.joinToString(", ")
+                    options.add(DlgOpt(c.title, "${c.artist} — ${r.title} ($meta) · AcoustID",
+                        MbClient.coverUrl(r.id).replace("front-250", "front-120")) {
+                        MbClient.buildTag(c, r)
+                    })
+                }
+            }
             for (c in cands) {
                 if (c.releases.isEmpty()) {
                     options.add(DlgOpt(c.title, c.artist, null) {
@@ -442,7 +506,7 @@ fun searchAndPick(
                     }
                     val text = JLabel(
                         "<html><div style='width:440px'><b>${esc(value.title)}</b><br>" +
-                            "<font color='#666666'>${esc(value.sub)}</font></div></html>")
+                            "<font color='${if (darkMode) "#B8B0D0" else "#666666"}'>${esc(value.sub)}</font></div></html>")
                     return JPanel(BorderLayout(8, 0)).apply {
                         border = BorderFactory.createEmptyBorder(6, 8, 6, 8)
                         add(iconLabel, BorderLayout.WEST)
@@ -474,7 +538,19 @@ fun searchAndPick(
                         thread {
                             try {
                                 val t = options[idx].build()
-                                SwingUtilities.invokeLater { wp.dispose(); onPicked(t) }
+                                SwingUtilities.invokeLater {
+                                    wp.dispose()
+                                    // Pre-apply preview of what will change.
+                                    val old = tag ?: TagData()
+                                    val merged = if (t.partial) t.mergedOver(old) else t
+                                    val lines = TagDiff.lines(old, merged)
+                                    val msg = if (lines.isEmpty()) Strings.t("no_change")
+                                        else lines.joinToString("\n")
+                                    val okDiff = JOptionPane.showConfirmDialog(frame, msg,
+                                        Strings.t("diff_title"), JOptionPane.OK_CANCEL_OPTION)
+                                    if (okDiff == JOptionPane.OK_OPTION) onPicked(t)
+                                    else onSkip?.invoke()
+                                }
                             } catch (e: Exception) {
                                 SwingUtilities.invokeLater { wp.dispose() }
                                 fail("${e.javaClass.simpleName}: ${e.message}")
@@ -550,17 +626,28 @@ fun showSettings() {
     val srcPanel = JPanel(GridLayout(checks.size, 1))
     checks.forEach { srcPanel.add(it) }
     panel.add(srcPanel, BorderLayout.CENTER)
+    val bottom = JPanel(GridLayout(3, 2, 6, 6))
+    val acoustidField = JTextField(props.getProperty("acoustid_key") ?: "", 24)
+    bottom.add(JLabel(Strings.t("acoustid_key"))); bottom.add(acoustidField)
+    val darkBox = JCheckBox(Strings.t("dark_mode"), darkMode)
+    bottom.add(darkBox); bottom.add(JLabel(""))
+    panel.add(bottom, BorderLayout.SOUTH)
     val res = JOptionPane.showConfirmDialog(frame, panel, Strings.t("settings"),
         JOptionPane.OK_CANCEL_OPTION)
     if (res == JOptionPane.OK_OPTION) {
         saveProp("cover_cap", caps[box.selectedIndex].toString())
         sourceKeys.forEachIndexed { i, (key, _) -> saveProp(key, checks[i].isSelected.toString()) }
+        saveProp("acoustid_key", acoustidField.text.trim())
+        if (darkBox.isSelected != darkMode) {
+            saveProp("dark", darkBox.isSelected.toString())
+            info(Strings.t("restart_note"))
+        }
         loadSourcePrefs()
     }
 }
 
 fun applySearchTo(row: Row, label: String?, bulk: Boolean, onSkip: () -> Unit, onStop: () -> Unit, done: () -> Unit) {
-    searchAndPick(row.tag, NameParser.parse(row.file), label, onSkip, onStop, bulk) { picked ->
+    searchAndPick(row.tag, NameParser.parse(row.file), row.file, label, onSkip, onStop, bulk) { picked ->
         // Partial sources (Audius / NDL) only fill what they know.
         val merged = if (picked.partial)
             picked.mergedOver(row.tag ?: TagData()) else picked
@@ -687,7 +774,10 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
         gc.gridx = 1; panel.add(coverLabel, gc); y++
         updateCoverLabel()
         coverLabel.addMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) { pickCoverFile() }
+            override fun mouseClicked(e: MouseEvent) {
+                // Click: zoom the cover when there is one, else pick a file.
+                if (coverBytes != null) showCoverZoom() else pickCoverFile()
+            }
         })
         DropTarget(coverLabel, object : DropTargetAdapter() {
             override fun drop(ev: DropTargetDropEvent) {
@@ -707,7 +797,7 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
         })
         btns.add(JButton(Strings.t("search")).apply {
             addActionListener {
-                searchAndPick(collect(), NameParser.parse(row.file)) { picked ->
+                searchAndPick(collect(), NameParser.parse(row.file), row.file) { picked ->
                     fillFrom(picked)
                 }
             }
@@ -748,6 +838,19 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
             val f = fc.selectedFile
             if (MbClient.isImageFile(f)) setCover(f.readBytes())
         }
+    }
+
+    /** Large view of the current cover art. */
+    private fun showCoverZoom() {
+        val b = coverBytes ?: return
+        val img = try { ImageIO.read(b.inputStream()) } catch (e: Exception) { null } ?: return
+        val maxDim = 620
+        val ratio = minOf(1.0, maxDim.toDouble() / maxOf(img.width, img.height))
+        val w = (img.width * ratio).toInt().coerceAtLeast(1)
+        val h = (img.height * ratio).toInt().coerceAtLeast(1)
+        val dlg = JDialog(this, Strings.t("cover"), true)
+        dlg.contentPane.add(JLabel(ImageIcon(img.getScaledInstance(w, h, Image.SCALE_SMOOTH))))
+        dlg.pack(); dlg.setLocationRelativeTo(this); dlg.isVisible = true
     }
 
     private fun fillFrom(d: TagData) {
@@ -954,11 +1057,27 @@ fun undoSelected() {
     val res = JOptionPane.showConfirmDialog(frame, Strings.t("confirm_undo"),
         Strings.t("undo"), JOptionPane.OK_CANCEL_OPTION)
     if (res != JOptionPane.OK_OPTION) return
+    // With several backup generations, let the user choose which one.
+    val gens = sortedSetOf<Long>(reverseOrder())
+    for (row in sel) gens.addAll(Backup.generations(row.file, backupDir))
+    val genList = gens.take(5)
+    var generation: Long? = null
+    if (genList.size > 1) {
+        val fmt = java.text.SimpleDateFormat("yyyy/MM/dd HH:mm", Locale.getDefault())
+        val labels = genList.map { fmt.format(java.util.Date(it)) }.toTypedArray()
+        val pick = JOptionPane.showInputDialog(frame, Strings.t("pick_backup"),
+            Strings.t("undo"), JOptionPane.PLAIN_MESSAGE, null, labels, labels[0])
+            as? String ?: return
+        generation = genList[labels.indexOf(pick)]
+    }
+    val gen = generation
     thread {
         var restored = 0
         for (row in sel) {
             try {
-                if (Backup.restore(row.file, backupDir)) {
+                val ok = if (gen == null) Backup.restore(row.file, backupDir)
+                    else Backup.restoreAt(row.file, backupDir, gen)
+                if (ok) {
                     row.tag = TagService.read(row.file)
                     row.checked = false // acted on: drop the check
                     row.status = Strings.t("restored"); restored++
@@ -1040,12 +1159,39 @@ fun main() {
     val props = loadProps()
     Strings.lang = Strings.resolve(props.getProperty("lang"), Locale.getDefault().toLanguageTag())
     ItunesClient.country = Locale.getDefault().country.ifBlank { "JP" }
+    darkMode = props.getProperty("dark")?.toBooleanStrictOrNull() ?: false
     loadSourcePrefs()
     // Housekeeping: keep only the newest few backups per file.
     thread { try { Backup.prune(backupDir) } catch (e: Exception) { } }
     MbClient.userAgent = "OtoTag/0.1 ( https://github.com/yyoossk/ototag )"
 
     SwingUtilities.invokeLater {
+        if (darkMode) {
+            val bg = Color(0x1E, 0x1A, 0x2B)
+            val panel = Color(0x28, 0x21, 0x3A)
+            val ink = Color(0xF0, 0xEB, 0xFA)
+            for (k in listOf("Panel.background", "OptionPane.background",
+                "ScrollPane.background", "Viewport.background")) UIManager.put(k, bg)
+            for (k in listOf("Label.foreground", "OptionPane.messageForeground",
+                "CheckBox.foreground", "ComboBox.foreground", "Button.foreground"))
+                UIManager.put(k, ink)
+            for (k in listOf("CheckBox.background", "ComboBox.background",
+                "RadioButton.background")) UIManager.put(k, bg)
+            UIManager.put("Table.background", panel)
+            UIManager.put("Table.foreground", ink)
+            UIManager.put("Table.gridColor", Color(0x44, 0x3A, 0x5E))
+            UIManager.put("TextField.background", Color(0x2C, 0x24, 0x44))
+            UIManager.put("TextField.foreground", ink)
+            UIManager.put("TextField.caretForeground", ink)
+            UIManager.put("TextArea.background", Color(0x2C, 0x24, 0x44))
+            UIManager.put("TextArea.foreground", ink)
+            UIManager.put("TextArea.caretForeground", ink)
+            UIManager.put("List.background", panel)
+            UIManager.put("List.foreground", ink)
+            UIManager.put("List.selectionBackground", Color(0x4C, 0x1D, 0x95))
+            UIManager.put("List.selectionForeground", ink)
+            UIManager.put("ProgressBar.background", bg)
+        }
         frame = JFrame("OtoTag")
         frame.defaultCloseOperation = JFrame.EXIT_ON_CLOSE
         model = RowModel()
@@ -1055,7 +1201,7 @@ fun main() {
         table.columnModel.getColumn(2).preferredWidth = 240
         table.rowHeight = 44
         // vivid theme: lavender panels, coloured buttons, violet table header
-        val themeBg = Color(0xF6, 0xF2, 0xFF)
+        val themeBg = if (darkMode) Color(0x1E, 0x1A, 0x2B) else Color(0xF6, 0xF2, 0xFF)
         fun vivid(btn: JButton, hex: Int) {
             btn.background = Color(hex); btn.foreground = Color.WHITE
             btn.isOpaque = true; btn.isBorderPainted = false
@@ -1064,7 +1210,9 @@ fun main() {
         (table.tableHeader.defaultRenderer as? javax.swing.table.DefaultTableCellRenderer)?.let {
             it.background = Color(0x6D, 0x28, 0xD9); it.foreground = Color.WHITE
         }
-        table.selectionBackground = Color(0xED, 0xE9, 0xFF)
+        table.selectionBackground = if (darkMode) Color(0x4C, 0x1D, 0x95)
+            else Color(0xED, 0xE9, 0xFF)
+        if (darkMode) table.selectionForeground = Color(0xF0, 0xEB, 0xFA)
 
         val top = JPanel(FlowLayout(FlowLayout.LEFT)).apply { background = themeBg }
         top.add(JButton(Strings.t("choose_folder")).apply { vivid(this, 0x6D28D9) }.apply {
@@ -1095,6 +1243,18 @@ fun main() {
             }
         }
         top.add(filterBox)
+        val sortBox = JComboBox(arrayOf(
+            Strings.t("sort_name"), Strings.t("sort_title"),
+            Strings.t("sort_album"), Strings.t("sort_artist")))
+        sortBox.selectedIndex = sortMode
+        sortBox.addActionListener {
+            if (sortBox.selectedIndex != sortMode) {
+                sortMode = sortBox.selectedIndex
+                refresh()
+            }
+        }
+        top.add(JLabel(Strings.t("sort")))
+        top.add(sortBox)
         val langBox = JComboBox(Strings.LANGS.map { Strings.LANG_NAMES[it] }.toTypedArray())
         langBox.selectedIndex = Strings.LANGS.indexOf(Strings.lang)
         langBox.addActionListener {

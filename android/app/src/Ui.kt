@@ -10,10 +10,13 @@ import android.widget.Button
 
 /** Vivid, music-flavoured theme shared by the Android screens. */
 object Ui {
-    val BG = 0xFFF6F2FF.toInt()       // soft lavender background
-    val CARD = 0xFFFFFFFF.toInt()     // list card background
-    val INK = 0xFF2A2140.toInt()      // main text, deep purple ink
-    val SUB = 0xFF7A7396.toInt()      // secondary text
+    /** Dark palette switch (settings; defaults to the system night mode). */
+    var dark = false
+
+    val BG: Int get() = if (dark) 0xFF16121F.toInt() else 0xFFF6F2FF.toInt()
+    val CARD: Int get() = if (dark) 0xFF251D36.toInt() else 0xFFFFFFFF.toInt()
+    val INK: Int get() = if (dark) 0xFFF0EBFA.toInt() else 0xFF2A2140.toInt()
+    val SUB: Int get() = if (dark) 0xFFA79EC4.toInt() else 0xFF7A7396.toInt()
 
     val VIOLET = 0xFF6D28D9.toInt()
     val PINK = 0xFFDB2777.toInt()
@@ -42,9 +45,9 @@ object Ui {
         }
     }
 
-    /** White rounded card background used for list rows and history entries. */
+    /** Rounded card background used for list rows and history entries. */
     fun cardBg(ctx: Context, radiusDp: Float = 14f): GradientDrawable = GradientDrawable().apply {
-        setColor(0xFFFFFFFF.toInt())
+        setColor(CARD)
         cornerRadius = dpf(ctx, radiusDp)
     }
 
@@ -61,20 +64,21 @@ object Ui {
     ).apply { cornerRadius = dpf(ctx, radiusDp) }
 
     private var noCover: android.graphics.Bitmap? = null
+    private var noCoverDark = false
 
     /**
      * "No image" placeholder for files without cover art: a pale panel with
      * a muted music note, drawn once and reused everywhere.
      */
     fun noCoverBitmap(): android.graphics.Bitmap {
-        noCover?.let { return it }
+        noCover?.let { if (noCoverDark == dark) return it }
         val size = 156
         val bmp = android.graphics.Bitmap.createBitmap(
             size, size, android.graphics.Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(bmp)
-        canvas.drawColor(0xFFE9E5F2.toInt())
+        canvas.drawColor(if (dark) 0xFF2E2750.toInt() else 0xFFE9E5F2.toInt())
         val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = 0xFFA79BCB.toInt()
+            color = if (dark) 0xFF7A6FA3.toInt() else 0xFFA79BCB.toInt()
             textSize = 96f
             textAlign = android.graphics.Paint.Align.CENTER
             typeface = android.graphics.Typeface.DEFAULT_BOLD
@@ -83,6 +87,7 @@ object Ui {
         val y = size / 2f - (fm.ascent + fm.descent) / 2f
         canvas.drawText("♪", size / 2f, y, paint)
         noCover = bmp
+        noCoverDark = dark
         return bmp
     }
 

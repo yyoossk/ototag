@@ -54,6 +54,21 @@ if [ ! -d "$ROOT/jre-cache" ]; then
 fi
 cp -r "$ROOT/jre-cache/jre" "$STAGE/jre"
 
+echo "-- fpcalc (AcoustID fingerprint tool for Windows)"
+if [ ! -f "$ROOT/fpcalc-cache/fpcalc.exe" ]; then
+    mkdir -p "$ROOT/fpcalc-cache"
+    FPZIP="$TC/acoustid/fpcalc-win.zip"
+    if [ ! -f "$FPZIP" ]; then
+        curl -sL -o "$FPZIP" \
+            "https://github.com/acoustid/chromaprint/releases/download/v1.6.2/chromaprint-fpcalc-1.6.2-windows-x86_64.zip"
+    fi
+    (cd "$ROOT/fpcalc-cache" && unzip -q -o "$FPZIP" \
+        "chromaprint-fpcalc-1.6.2-windows-x86_64/fpcalc.exe" &&
+        mv chromaprint-fpcalc-1.6.2-windows-x86_64/fpcalc.exe . &&
+        rmdir chromaprint-fpcalc-1.6.2-windows-x86_64)
+fi
+cp "$ROOT/fpcalc-cache/fpcalc.exe" "$STAGE/fpcalc.exe"
+
 echo "-- zip"
 rm -f "$OUT"
 (cd "$STAGE" && zip -qr "$OUT" .)

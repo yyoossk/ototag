@@ -47,6 +47,11 @@ echo "-- resources + package"
     --version-name "$STAMP" \
     "$BUILD/res.zip"
 (cd "$BUILD/dex" && zip -q ../app-raw.apk classes.dex)
+# Native fingerprint library (libchromaprint, see app/jni/build-fp.sh).
+# Stored uncompressed; the manifest sets extractNativeLibs=true.
+mkdir -p "$BUILD/lib/arm64-v8a"
+cp "$ROOT/app/lib/arm64-v8a/libotofp.so" "$BUILD/lib/arm64-v8a/"
+(cd "$BUILD" && zip -q -0 app-raw.apk lib/arm64-v8a/libotofp.so)
 "$BT/zipalign" -p -f 4 "$BUILD/app-raw.apk" "$BUILD/app-aligned.apk"
 
 echo "-- sign"

@@ -260,6 +260,33 @@ object Backup {
     }
 
     /**
+     * The distinct backup generations (millis timestamps from the file
+     * names) for one original file, newest first.
+     */
+    fun generations(file: File, backupDir: File): List<Long> {
+        val key = Integer.toHexString(file.absolutePath.hashCode())
+        val dir = File(backupDir, key)
+        if (!dir.isDirectory) return emptyList()
+        return (dir.listFiles() ?: emptyArray()).filter { it.isFile }
+            .mapNotNull { it.name.substringBefore('_').toLongOrNull() }
+            .distinct().sortedDescending()
+    }
+
+    /** Restores the newest backup created at or before [atOrBefore]. */
+    fun restoreAt(file: File, backupDir: File, atOrBefore: Long): Boolean {
+        val key = Integer.toHexString(file.absolutePath.hashCode())
+        val dir = File(backupDir, key)
+        if (!dir.isDirectory) return false
+        val b = (dir.listFiles() ?: emptyArray()).filter { it.isFile }
+            .filter {
+                (it.name.substringBefore('_').toLongOrNull() ?: Long.MAX_VALUE) <= atOrBefore
+            }
+            .maxByOrNull { it.name } ?: return false
+        b.copyTo(file, overwrite = true)
+        return true
+    }
+
+    /**
      * Keeps the backup store from growing forever: per original file only
      * the newest [keepPerFile] backups survive (Undo always uses the
      * newest, so nothing the user can still reach is lost). Empty folders
