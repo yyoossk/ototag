@@ -61,7 +61,7 @@ class HistoryActivity : Activity() {
                     })
                     if (r.body.isNotBlank()) {
                         card.addView(TextView(this).apply {
-                            text = r.body.trim()
+                            text = UpdateChecker.localizedBody(r.body, Strings.lang)
                             textSize = 14f
                             setTextColor(Ui.INK)
                             setPadding(0, dp(6), 0, 0)

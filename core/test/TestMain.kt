@@ -163,6 +163,13 @@ fun main() {
     check("isNewer true", UpdateChecker.isNewer("20261127-0644", "20261127-0528"))
     check("isNewer false (same)", !UpdateChecker.isNewer("20261127-0644", "20261127-0644"))
     check("isNewer false (older)", !UpdateChecker.isNewer("20261127-0528", "20261127-0644"))
+    // Release notes are published English first, then Japanese after a
+    // --- line; the history page shows only the app's language block.
+    val bilin = "OtoTag 20261128-0402\n\nEnglish note.\n\n---\n\nOtoTag 20261128-0402\n\nJapanese note."
+    check("history body en", UpdateChecker.localizedBody(bilin, "en") == "English note.")
+    check("history body fr falls back to en", UpdateChecker.localizedBody(bilin, "fr") == "English note.")
+    check("history body ja", UpdateChecker.localizedBody(bilin, "ja") == "Japanese note.")
+    check("history body single block", UpdateChecker.localizedBody("OtoTag 20261127-0644\n\nOnly block.", "ja") == "Only block.")
 
     // --- disguised container: a real MP4 carrying an .mp3 name (YouTube download) ---
     val work2 = File("testwork"); work2.mkdirs()

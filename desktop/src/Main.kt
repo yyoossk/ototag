@@ -1049,7 +1049,7 @@ fun showHistory() {
         SwingUtilities.invokeLater {
             area.text = if (releases.isEmpty()) Strings.t("no_results")
             else releases.joinToString("\n\n") { r ->
-                "${r.tag}   ${r.publishedAt}\n${r.body.trim()}"
+                "${r.tag}   ${r.publishedAt}\n${UpdateChecker.localizedBody(r.body, Strings.lang)}"
             }
             area.caretPosition = 0
         }

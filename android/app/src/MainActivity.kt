@@ -123,8 +123,12 @@ class MainActivity : Activity() {
      * big tree stays navigable. Single-folder lists get no headers.
      */
     private fun displayRows(): List<Any> {
-        rowsCache?.let { return it }
+        // shownItems() first: it clears rowsCache when its inputs changed.
+        // Checking rowsCache first returned the cached rows forever —
+        // including the empty rows from startup, so a picked folder or
+        // files never appeared in the list.
         val shown = shownItems()
+        rowsCache?.let { return it }
         val folders = shown.map { it.folder }.distinct()
         val rows: List<Any> = if (folders.size <= 1) {
             shown.map { SongRow(it) }

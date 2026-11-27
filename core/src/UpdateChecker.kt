@@ -92,6 +92,32 @@ object UpdateChecker {
         return out
     }
 
+
+    /**
+     * The part of a release body written for [lang]. Release notes are
+     * published as an English block, a "---" line, then a Japanese
+     * block; the history page shows only the block for the app's
+     * language (English for every language but Japanese). A body with
+     * no separator passes through as-is. The leading "OtoTag <tag>"
+     * title line is dropped: the history card already shows the tag.
+     */
+    fun localizedBody(body: String, lang: String): String {
+        val text = body.replace("\r\n", "\n")
+        val sections = text.split(Regex("(?m)^---[ \t]*$"))
+        var picked = when {
+            sections.size < 2 -> text
+            lang == "ja" -> sections.last()
+            else -> sections.first()
+        }.trim()
+        val lines = picked.lines().toMutableList()
+        if (lines.isNotEmpty()) {
+            val first = lines[0].trim()
+            if (first.startsWith("OtoTag ") && first.split(" ").size == 2)
+                lines.removeAt(0)
+        }
+        return lines.joinToString("\n").trim()
+    }
+
     /** True when [latest] is a newer build stamp than [current]. */
     fun isNewer(latest: String, current: String): Boolean {
         val fmt = Regex("""\d{8}-\d{4}""")
