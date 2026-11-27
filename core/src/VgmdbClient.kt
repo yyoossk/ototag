@@ -14,7 +14,9 @@ data class VgmdbTrack(
     val trackTotal: String,
     val disc: String,
     val discTotal: String,
-    val coverUrl: String
+    val coverUrl: String,
+    /** Small cover variant for fast candidate thumbnails; = coverUrl when none. */
+    val coverThumbUrl: String = coverUrl
 )
 
 /**
@@ -105,6 +107,15 @@ object VgmdbClient {
                 if (cover.isBlank()) {
                     cover = album["covers"].asArr().firstOrNull()?.asObj()?.get("full").asStr()
                 }
+                var thumb = album["picture_small"].asStr()
+                    .ifBlank { album["picture_medium"].asStr() }
+                if (thumb.isBlank()) {
+                    val c0 = album["covers"].asArr().firstOrNull()?.asObj()
+                    thumb = c0?.get("small").asStr()
+                        .ifBlank { c0?.get("medium").asStr() }
+                        .ifBlank { c0?.get("thumb").asStr() }
+                }
+                if (thumb.isBlank()) thumb = cover
                 val discs = album["discs"].asArr()
                 discs.forEachIndexed { di, d ->
                     val tracks = d.asObj()["tracks"].asArr()
@@ -122,7 +133,8 @@ object VgmdbClient {
                             trackTotal = tracks.size.toString(),
                             disc = (di + 1).toString(),
                             discTotal = discs.size.toString(),
-                            coverUrl = cover
+                            coverUrl = cover,
+                            coverThumbUrl = thumb
                         ))
                     }
                 }

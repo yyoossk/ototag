@@ -263,7 +263,8 @@ fun searchAndPick(
                 }
                 for (r in c.releases) {
                     val meta = listOf(r.date.take(4), r.country).filter { it.isNotBlank() }.joinToString(", ")
-                    options.add(DlgOpt(c.title, "${c.artist} — ${r.title} ($meta)", MbClient.coverUrl(r.id)) {
+                    options.add(DlgOpt(c.title, "${c.artist} — ${r.title} ($meta)",
+                        MbClient.coverUrl(r.id).replace("front-250", "front-120")) {
                         MbClient.buildTag(c, r)
                     })
                 }
@@ -282,20 +283,20 @@ fun searchAndPick(
             for (t in itunes) {
                 val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
                 options.add(DlgOpt(t.title, "${t.artist} — ${t.album}$yr · iTunes",
-                    t.artworkUrl.ifBlank { null }?.replace("600x600bb.jpg", "200x200bb.jpg")) {
+                    t.artworkUrl.ifBlank { null }?.replace("600x600bb.jpg", "100x100bb.jpg")) {
                     ItunesClient.buildTag(t)
                 })
             }
             for (t in deezer) {
                 options.add(DlgOpt(t.title, "${t.artist} — ${t.album} · Deezer",
-                    t.coverUrl.ifBlank { null }?.replace("1000x1000", "250x250")) {
+                    t.coverUrl.ifBlank { null }?.replace("1000x1000", "150x150")) {
                     DeezerClient.buildTag(t)
                 })
             }
             for (t in vgmdb) {
                 val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
                 options.add(DlgOpt(t.title, "${t.artist} — ${t.album}$yr · VGMdb",
-                    t.coverUrl.ifBlank { null }) {
+                    t.coverThumbUrl.ifBlank { null }) {
                     VgmdbClient.buildTag(t)
                 })
             }

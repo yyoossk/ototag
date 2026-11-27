@@ -217,16 +217,23 @@ object SearchFlow {
     private val iconWaiters = java.util.Collections.synchronizedMap(
         HashMap<String, MutableList<() -> Unit>>())
 
-    /** Smaller source variant where the CDN offers one (display is ~52dp). */
+    /**
+     * Smallest source variant the CDN offers: the row shows ~52dp, so a
+     * small, slightly soft image that arrives fast beats a big sharp one.
+     */
     private fun thumbUrl(url: String): String = url
-        .replace("600x600bb.jpg", "200x200bb.jpg")
-        .replace("1000x1000", "250x250")
+        .replace("600x600bb.jpg", "100x100bb.jpg")
+        .replace("1000x1000", "150x150")
+        .replace("front-250", "front-120")
+
+    private val iconGate = java.util.concurrent.Semaphore(6)
 
     private fun loadIcon(url: String, done: () -> Unit) {
         if (iconCache.containsKey(url)) { done(); return }
         synchronized(iconWaiters) { iconWaiters.getOrPut(url) { mutableListOf() }.add(done) }
         if (!iconLoading.add(url)) return
         thread {
+            iconGate.acquire()
             try {
                 val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
                 conn.setRequestProperty("User-Agent",
@@ -240,11 +247,12 @@ object SearchFlow {
                 }
                 android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
                 var sample = 1
-                while (bounds.outWidth / sample > 168 || bounds.outHeight / sample > 168) sample *= 2
+                while (bounds.outWidth / sample > 128 || bounds.outHeight / sample > 128) sample *= 2
                 val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
                 val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
                 if (bmp != null) iconCache[url] = bmp
             } catch (e: Exception) { }
+            finally { iconGate.release() }
             iconLoading.remove(url)
             val waiters = synchronized(iconWaiters) { iconWaiters.remove(url) } ?: emptyList()
             for (w in waiters) w()
@@ -272,7 +280,7 @@ object SearchFlow {
             for (r in c.releases) {
                 val yr = r.date.take(4)
                 val meta = listOf(yr, r.country).filter { it.isNotBlank() }.joinToString(", ")
-                options.add(Opt(c.title, "${c.artist} — ${r.title} ($meta)", MbClient.coverUrl(r.id)) {
+                options.add(Opt(c.title, "${c.artist} — ${r.title} ($meta)", thumbUrl(MbClient.coverUrl(r.id))) {
                     MbClient.buildTag(c, r)
                 })
             }
@@ -304,7 +312,7 @@ object SearchFlow {
         for (t in vgmdb) {
             val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
             options.add(Opt(t.title, "${t.artist} — ${t.album}$yr · VGMdb",
-                t.coverUrl.ifBlank { null }) {
+                t.coverThumbUrl.ifBlank { null }) {
                 VgmdbClient.buildTag(t)
             })
         }

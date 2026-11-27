@@ -205,6 +205,8 @@ fun main() {
     val vg = VgmdbClient.search("sample")
     check("vgmdb tracks", vg.size == 2, vg.size.toString())
     val vgT = vg.firstOrNull()
+    check("vgmdb thumb", vgT?.coverThumbUrl == "https://example.invalid/cover-small.jpg",
+        vgT?.coverThumbUrl ?: "")
     check("vgmdb fields", vgT?.title == "サンプルの歌" && vgT?.artist == "サンプル歌手" &&
         vgT?.album == "サンプル・サウンドトラック" && vgT?.year == "2023" &&
         vgT?.track == "1" && vgT?.trackTotal == "2", vgT.toString())

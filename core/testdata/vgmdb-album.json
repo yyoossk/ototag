@@ -1,1 +1,53 @@
-{"name": "Example Original Soundtrack", "link": "album/99999", "names": {"en": "Example Original Soundtrack", "ja": "サンプル・サウンドトラック"}, "catalog": "SMP-0001", "release_date": "2023-05-24", "picture_full": "https://example.invalid/cover-full.jpg", "performers": [{"link": "artist/111", "names": {"en": "Sample Singers", "ja": "サンプル歌手"}}], "composers": [{"link": "artist/222", "names": {"en": "Sample Composer", "ja": "サンプル作曲家"}}], "discs": [{"name": "Disc 1", "tracks": [{"track_number": 1, "track_length": "3:30", "names": {"Japanese": "サンプルの歌", "English": "Sample Song"}}, {"track_number": 2, "track_length": "4:00", "names": {"Japanese": "二曲目", "English": "Second Song"}}]}]}
+{
+ "name": "Example Original Soundtrack",
+ "link": "album/99999",
+ "names": {
+  "en": "Example Original Soundtrack",
+  "ja": "サンプル・サウンドトラック"
+ },
+ "catalog": "SMP-0001",
+ "release_date": "2023-05-24",
+ "picture_full": "https://example.invalid/cover-full.jpg",
+ "performers": [
+  {
+   "link": "artist/111",
+   "names": {
+    "en": "Sample Singers",
+    "ja": "サンプル歌手"
+   }
+  }
+ ],
+ "composers": [
+  {
+   "link": "artist/222",
+   "names": {
+    "en": "Sample Composer",
+    "ja": "サンプル作曲家"
+   }
+  }
+ ],
+ "discs": [
+  {
+   "name": "Disc 1",
+   "tracks": [
+    {
+     "track_number": 1,
+     "track_length": "3:30",
+     "names": {
+      "Japanese": "サンプルの歌",
+      "English": "Sample Song"
+     }
+    },
+    {
+     "track_number": 2,
+     "track_length": "4:00",
+     "names": {
+      "Japanese": "二曲目",
+      "English": "Second Song"
+     }
+    }
+   ]
+  }
+ ],
+ "picture_small": "https://example.invalid/cover-small.jpg"
+}
