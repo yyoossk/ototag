@@ -137,6 +137,16 @@ object TagService {
         val fmt = af.format
         var t = af.tag
         if (t == null) t = AudioTagger.createTag(fmt)
+        // An MP3 carrying only an ID3v1 tag cannot hold most fields
+        // (setting TRACK_TOTAL on it throws, and the whole save fails).
+        // Write a fresh ID3v2.4 tag instead: every field TagData knows
+        // is set from [d] below anyway, and ID3v1 holds nothing beyond
+        // those fields, so nothing is lost in the upgrade.
+        if (fmt == org.jaudiotagger.kt.AudioFormat.MP3 &&
+            t is org.jaudiotagger.kt.tag.id3.Id3v1Tag) {
+            t = org.jaudiotagger.kt.tag.id3.Id3v2Tag(
+                org.jaudiotagger.kt.tag.id3.Id3v2Version.V24)
+        }
         setOrRemove(t, FieldKey.TITLE, d.title)
         setOrRemove(t, FieldKey.ARTIST, d.artist)
         setOrRemove(t, FieldKey.ALBUM, d.album)

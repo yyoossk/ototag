@@ -325,6 +325,42 @@ fun main() {
         check("$label sniff", TagService.sniffFormat(work) != null, TagService.sniffFormat(work).toString())
     }
 
+    // --- ID3v1-only MP3: writing must upgrade to ID3v2, not fail ---
+    // (A real file with no ID3v2 header and an empty ID3v1 trailer made
+    // every save throw "FieldKey TRACK_TOTAL is not supported by ID3v1".)
+    run {
+        var raw = File("testdata/small.mp3").readBytes()
+        // Strip the ID3v2 header, if any (syncsafe size in bytes 6..9).
+        if (raw.size > 10 && raw[0] == 'I'.code.toByte() && raw[1] == 'D'.code.toByte()) {
+            val sz = ((raw[6].toInt() and 0x7F) shl 21) or ((raw[7].toInt() and 0x7F) shl 14) or
+                ((raw[8].toInt() and 0x7F) shl 7) or (raw[9].toInt() and 0x7F)
+            raw = raw.copyOfRange(10 + sz, raw.size)
+        }
+        // Strip an existing ID3v1 trailer, if any.
+        if (raw.size > 128 && raw[raw.size - 128] == 'T'.code.toByte() &&
+            raw[raw.size - 127] == 'A'.code.toByte() && raw[raw.size - 126] == 'G'.code.toByte())
+            raw = raw.copyOfRange(0, raw.size - 128)
+        val v1 = ByteArray(128)
+        "TAG".toByteArray(Charsets.US_ASCII).copyInto(v1, 0)
+        "V1 Song".toByteArray(Charsets.US_ASCII).copyInto(v1, 3)
+        "V1 Artist".toByteArray(Charsets.US_ASCII).copyInto(v1, 33)
+        v1[127] = 255.toByte()
+        val work = File("testwork/v1only.mp3").apply { parentFile.mkdirs() }
+        work.writeBytes(raw + v1)
+        val before = TagService.read(work)
+        check("id3v1 read", before.title == "V1 Song" && before.artist == "V1 Artist",
+            "${before.title}/${before.artist}")
+        TagService.write(work, TagData(title = "V1 Song", artist = "V1 Artist",
+            album = "盤", track = "2", trackTotal = "12", disc = "1", discTotal = "2",
+            lyrics = "歌詞です", cover = File("testdata/tiny.png").readBytes()))
+        val after = TagService.read(work)
+        check("id3v1 upgrade write", after.trackTotal == "12" && after.discTotal == "2" &&
+            after.title == "V1 Song" && after.lyrics == "歌詞です" && after.cover != null,
+            "${after.trackTotal}/${after.discTotal}/${after.lyrics}/${after.cover != null}")
+        val head = work.readBytes()
+        check("id3v1 became id3v2", head[0] == 'I'.code.toByte() && head[1] == 'D'.code.toByte(), "")
+    }
+
     // --- Mojibake repair (Shift_JIS bytes mis-decoded as Latin-1) ---
     val original = "こんにちは世界"
     val garbled = String(original.toByteArray(Charset.forName("windows-31j")),
