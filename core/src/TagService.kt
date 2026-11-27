@@ -292,6 +292,25 @@ object Backup {
      * newest, so nothing the user can still reach is lost). Empty folders
      * are removed. Returns how many files were deleted.
      */
+    /** Total bytes held by all backups. */
+    fun totalSize(backupDir: File): Long {
+        if (!backupDir.isDirectory) return 0
+        var total = 0L
+        backupDir.walkTopDown().forEach { if (it.isFile) total += it.length() }
+        return total
+    }
+
+    /** Deletes every backup; returns how many files were removed. */
+    fun deleteAll(backupDir: File): Int {
+        if (!backupDir.isDirectory) return 0
+        var n = 0
+        for (child in backupDir.listFiles() ?: emptyArray()) {
+            child.walkTopDown().forEach { if (it.isFile) n++ }
+            child.deleteRecursively()
+        }
+        return n
+    }
+
     fun prune(backupDir: File, keepPerFile: Int = 3): Int {
         if (!backupDir.isDirectory) return 0
         var deleted = 0

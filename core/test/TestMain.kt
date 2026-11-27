@@ -331,7 +331,10 @@ fun main() {
     val sub = File(bdir, "deadbeef"); sub.mkdirs()
     for (i in 1..6) File(sub, "100000000000${i}_song.mp3").writeText("x")
     val deleted = Backup.prune(bdir, keepPerFile = 3)
-    val remaining = (sub.listFiles() ?: emptyArray()).map { it.name }.sorted()
+    // java.util sort on purpose: this suite also runs against the shrunk
+    // desktop jar, where stdlib helpers no production code uses are gone.
+    val remaining = (sub.listFiles() ?: emptyArray()).map { it.name }
+        .also { java.util.Collections.sort(it) }
     check("backup prune", deleted == 3 && remaining.size == 3 &&
         remaining.first().startsWith("1000000000004"), remaining.toString())
 
@@ -400,6 +403,21 @@ fun main() {
             lines.any { it.startsWith(Strings.t("track")) } &&
             lines.any { it.startsWith(Strings.t("cover")) }, lines.toString())
         check("diff none", TagDiff.lines(old, old.copy()).isEmpty())
+    }
+
+    // --- backup size + delete-all (settings) ---
+    run {
+        val bdir = File("testwork/sizebackups"); bdir.deleteRecursively()
+        val song = File("testwork/gens/song.mp3")
+        Backup.backup(song, bdir); Backup.backup(song, bdir)
+        val sz = Backup.totalSize(bdir)
+        check("backup size", sz > 0, sz.toString())
+        val n = Backup.deleteAll(bdir)
+        check("backup deleteAll", n >= 2 && Backup.totalSize(bdir) == 0L &&
+            Backup.generations(song, bdir).isEmpty(), n.toString())
+        Strings.lang = "ja"
+        check("filter/backup strings", Strings.t("filter_error") == "エラー" &&
+            Strings.t("delete_all") == "全て削除")
     }
 
     println(if (failures == 0) "ALL PASS" else "FAILURES: $failures")

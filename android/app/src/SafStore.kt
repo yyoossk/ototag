@@ -21,19 +21,34 @@ class Item(
     var thumb: android.graphics.Bitmap? = null
     var thumbFor: Int = 0
     var thumbLoading: Boolean = false
+    /** Whether the file has cover art (the bytes themselves are not kept). */
+    var hasCover: Boolean = false
+    /** Content hash of the current cover, for thumbnail freshness. */
+    var coverKey: Int = 0
 
-    /** The cached thumbnail without decoding anything (null when not ready). */
-    fun peekThumbnail(): android.graphics.Bitmap? {
-        val cover = tag?.cover ?: return null
-        return if (thumb != null && thumbFor == cover.contentHashCode()) thumb else null
+    /**
+     * Adopts a freshly read tag for list display, dropping the (often
+     * megabytes large) cover bytes from memory: the thumbnail is decoded
+     * from them first, and flows that really need the full tag re-read
+     * it from the local file. Call on a background thread (it decodes).
+     */
+    fun setTagLight(full: TagData?) {
+        if (full == null) {
+            tag = null; hasCover = false; coverKey = 0; thumb = null; thumbFor = 0
+            return
+        }
+        hasCover = full.cover != null
+        coverKey = full.cover?.contentHashCode() ?: 0
+        tag = full.copy(cover = null)
+        if (thumbFor != coverKey) {
+            thumb = null; thumbFor = 0
+            val cov = full.cover
+            if (cov != null) thumbnailFrom(cov)
+        }
     }
 
-    /** Decoded list thumbnail for the current cover bytes (cached by content hash). */
-    fun thumbnail(): android.graphics.Bitmap? {
-        val cover = tag?.cover ?: run { thumb = null; thumbFor = 0; return null }
-        val h = cover.contentHashCode()
-        if (thumb != null && thumbFor == h) return thumb
-        thumbFor = h
+    private fun thumbnailFrom(cover: ByteArray) {
+        thumbFor = coverKey
         thumb = try {
             val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
             android.graphics.BitmapFactory.decodeByteArray(cover, 0, cover.size, bounds)
@@ -42,6 +57,20 @@ class Item(
             val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
             android.graphics.BitmapFactory.decodeByteArray(cover, 0, cover.size, opts)
         } catch (e: Exception) { null }
+    }
+
+    /** The cached thumbnail without decoding anything (null when not ready). */
+    fun peekThumbnail(): android.graphics.Bitmap? =
+        if (thumb != null && thumbFor == coverKey) thumb else null
+
+    /** Decoded list thumbnail; re-reads the cover from the file if needed. */
+    fun thumbnail(): android.graphics.Bitmap? {
+        if (thumb != null && thumbFor == coverKey) return thumb
+        if (!hasCover) { thumb = null; thumbFor = 0; return null }
+        val f = local ?: return null
+        val cover = try { com.yyoo.ototag.core.TagService.read(f).cover }
+            catch (e: Exception) { null } ?: run { thumb = null; thumbFor = 0; return null }
+        thumbnailFrom(cover)
         return thumb
     }
 }

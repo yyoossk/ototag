@@ -48,11 +48,15 @@ class EditActivity : Activity() {
         scroll.addView(root)
 
         thread {
+            // The editor works on the FULL tag (cover included); the list
+            // only keeps a light copy without the cover bytes.
+            var full: TagData? = null
             try {
                 SafStore.ensureLocal(this, it)
-                if (it.tag == null) it.tag = TagService.read(it.local!!)
+                full = TagService.read(it.local!!)
+                it.setTagLight(full)
             } catch (e: Exception) { it.error = e.message }
-            runOnUiThread { fillFields(it.tag ?: TagData()) }
+            runOnUiThread { fillFields(full ?: TagData()) }
         }
 
         root.addView(TextView(this).apply { text = Strings.t("filename"); setTextColor(Ui.SUB) })
@@ -328,7 +332,7 @@ class EditActivity : Activity() {
                 if (!SafStore.verify(this, it, d.cover != null)) {
                     throw IllegalStateException("verify failed after write-back")
                 }
-                it.tag = TagService.read(it.local!!)
+                it.setTagLight(TagService.read(it.local!!))
                 if (newBase.isNotBlank() && newBase != it.name.substringBeforeLast('.')) {
                     val newName = newBase + "." + it.ext
                     if (!SafStore.rename(this, it, newName)) err = "rename failed: $newName"

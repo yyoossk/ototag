@@ -38,8 +38,27 @@ echo "-- fat jar"
      "$JAVA_HOME/bin/jar" xf "$j"
  done
  rm -f META-INF/*.SF META-INF/*.RSA META-INF/*.DSA
+ # Compile-time only metadata; ProGuard 7.6 cannot parse the Kotlin 2.4
+ # module files and nothing reads them at runtime.
+ rm -f META-INF/*.kotlin_module
  printf 'Main-Class: com.yyoo.ototag.desktop.MainKt\n' > "$BUILD/manifest.mf"
- "$JAVA_HOME/bin/jar" cfm "$STAGE/OtoTag.jar" "$BUILD/manifest.mf" .)
+ "$JAVA_HOME/bin/jar" cfm "$BUILD/fat.jar" "$BUILD/manifest.mf" .)
+
+echo "-- shrink (ProGuard when available)"
+PGJAR="$TC/shrink/proguard-7.6.1/lib/proguard.jar"
+if [ -f "$PGJAR" ]; then
+    "$JAVA_HOME/bin/java" -jar "$PGJAR" \
+        -injars "$BUILD/fat.jar" -outjars "$STAGE/OtoTag.jar" \
+        -libraryjars "$JAVA_HOME/jmods/java.base.jmod(!**.jar;!module-info.class)" \
+        -libraryjars "$JAVA_HOME/jmods/java.desktop.jmod(!**.jar;!module-info.class)" \
+        -libraryjars "$JAVA_HOME/jmods/java.logging.jmod(!**.jar;!module-info.class)" \
+        -libraryjars "$JAVA_HOME/jmods/java.xml.jmod(!**.jar;!module-info.class)" \
+        -libraryjars "$JAVA_HOME/jmods/java.prefs.jmod(!**.jar;!module-info.class)" \
+        @"$ROOT/proguard.pro"
+else
+    cp "$BUILD/fat.jar" "$STAGE/OtoTag.jar"
+fi
+ls -la "$BUILD/fat.jar" "$STAGE/OtoTag.jar"
 
 echo "-- launcher exe"
 (cd "$ROOT" && GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build \

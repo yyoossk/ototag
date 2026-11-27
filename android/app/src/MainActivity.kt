@@ -40,7 +40,8 @@ class MainActivity : Activity() {
     private fun shownItems(): List<Item> {
         val filtered = when (filterMode) {
             1 -> Items.list.filter { it.tag == null || it.tag!!.isBasicallyEmpty() }
-            2 -> Items.list.filter { it.tag?.cover == null }
+            2 -> Items.list.filter { !it.hasCover }
+            3 -> Items.list.filter { it.error != null }
             else -> Items.list
         }
         return when (sortMode) {
@@ -98,6 +99,28 @@ class MainActivity : Activity() {
             isChecked = Ui.dark
         }
         layout.addView(darkBox)
+        val backupLabel = TextView(this).apply {
+            text = "${Strings.t("backup")}: ${fmtSize(Backup.totalSize(SafStore.backupDir(this@MainActivity)))}"
+        }
+        layout.addView(backupLabel)
+        layout.addView(Button(this).apply {
+            text = Strings.t("delete_all"); Ui.styleButton(this, Ui.ORANGE)
+            setOnClickListener {
+                AlertDialog.Builder(this@MainActivity)
+                    .setMessage(Strings.t("confirm_delete_all"))
+                    .setPositiveButton(Strings.t("delete_all")) { _, _ ->
+                        thread {
+                            Backup.deleteAll(SafStore.backupDir(this@MainActivity))
+                            runOnUiThread {
+                                backupLabel.text = "${Strings.t("backup")}: " +
+                                    fmtSize(Backup.totalSize(SafStore.backupDir(this@MainActivity)))
+                            }
+                        }
+                    }
+                    .setNegativeButton(Strings.t("cancel"), null)
+                    .show()
+            }
+        })
         AlertDialog.Builder(this)
             .setTitle(Strings.t("settings"))
             .setView(layout)
@@ -423,7 +446,8 @@ class MainActivity : Activity() {
         }
         val filterSpinner = Spinner(this)
         filterSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
-            listOf(Strings.t("filter_all"), Strings.t("filter_notag"), Strings.t("filter_nocover")))
+            listOf(Strings.t("filter_all"), Strings.t("filter_notag"), Strings.t("filter_nocover"),
+                Strings.t("filter_error")))
         filterSpinner.setSelection(filterMode)
         filterSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p: AdapterView<*>, v: View?, pos: Int, id: Long) {
@@ -500,6 +524,10 @@ class MainActivity : Activity() {
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
+    private fun fmtSize(bytes: Long): String =
+        if (bytes >= 1024 * 1024) String.format(Locale.US, "%.1f MB", bytes / 1048576.0)
+        else "${bytes / 1024} KB"
+
     private fun checkedItems(): List<Item> = Items.list.filter { it.checked }
 
     private fun toast(msg: String) =
@@ -526,12 +554,18 @@ class MainActivity : Activity() {
         if (idx >= sel.size) { adapter.notifyDataSetChanged(); toast(Strings.t("done")); return }
         val item = sel[idx]
         thread {
-            try { SafStore.ensureLocal(this, item); item.tag = TagService.read(item.local!!) }
-            catch (e: Exception) { item.error = e.message }
+            // The search and the partial merge need the FULL tag (with
+            // cover); the list itself only keeps the light copy.
+            var fullTag: TagData? = null
+            try {
+                SafStore.ensureLocal(this, item)
+                fullTag = TagService.read(item.local!!)
+                item.setTagLight(fullTag)
+            } catch (e: Exception) { item.error = e.message }
             runOnUiThread {
                 val parsed = NameParser.parse(File(item.name))
                 SearchFlow.start(
-                    this, item.tag, parsed,
+                    this, fullTag, parsed,
                     localFile = item.local,
                     progressLabel = "${idx + 1} / ${sel.size}\n${item.name}",
                     onSkip = { applyNext(sel, idx + 1) },
@@ -541,7 +575,7 @@ class MainActivity : Activity() {
                     // Partial sources (Audius / NDL) only fill what they know;
                     // keep the file's own values for everything else.
                     val merged = if (picked.partial)
-                        picked.mergedOver(item.tag ?: TagData()) else picked
+                        picked.mergedOver(fullTag ?: TagData()) else picked
                     // The cover cap applies to covers the candidate brought;
                     // a cover the file already had is left as it is.
                     val newTag = if (picked.cover != null)
@@ -554,7 +588,7 @@ class MainActivity : Activity() {
                             Backup.backup(item.local!!, SafStore.backupDir(this))
                             TagService.write(item.local!!, newTag)
                             SafStore.writeBack(this, item)
-                            item.tag = TagService.read(item.local!!)
+                            item.setTagLight(TagService.read(item.local!!))
                             item.error = null
                             if (!SafStore.verify(this, item, newTag.cover != null)) {
                                 item.error = Strings.t("failed")
@@ -651,7 +685,7 @@ class MainActivity : Activity() {
                     for (item in sel) {
                         try {
                             SafStore.ensureLocal(this, item)
-                            val cur = item.tag ?: TagService.read(item.local!!)
+                            val cur = TagService.read(item.local!!)
                             val d = TagData(
                                 title = cur.title, artist = cur.artist,
                                 album = inputs["album"]!!.text.toString().ifBlank { cur.album },
@@ -667,7 +701,7 @@ class MainActivity : Activity() {
                             Backup.backup(item.local!!, SafStore.backupDir(this))
                             TagService.write(item.local!!, d)
                             SafStore.writeBack(this, item)
-                            item.tag = TagService.read(item.local!!)
+                            item.setTagLight(TagService.read(item.local!!))
                             item.error = null
                         } catch (e: Exception) { item.error = e.message }
                     }
@@ -773,7 +807,7 @@ class MainActivity : Activity() {
                     else Backup.restoreAt(item.local!!, SafStore.backupDir(this), generation)
                     if (ok) {
                         SafStore.writeBack(this, item)
-                        item.tag = TagService.read(item.local!!)
+                        item.setTagLight(TagService.read(item.local!!))
                         item.checked = false // acted on: drop the check
                         restored++
                     }
@@ -803,7 +837,7 @@ class MainActivity : Activity() {
                         val item = items[i]
                         try {
                             SafStore.ensureLocal(this, item)
-                            item.tag = TagService.read(item.local!!)
+                            item.setTagLight(TagService.read(item.local!!))
                         } catch (e: Exception) { item.error = e.message }
                         runOnUiThread { adapter.notifyDataSetChanged() }
                     }
@@ -824,7 +858,7 @@ class MainActivity : Activity() {
                 Items.list.add(item)
                 try {
                     SafStore.ensureLocal(this, item)
-                    item.tag = TagService.read(item.local!!)
+                    item.setTagLight(TagService.read(item.local!!))
                 } catch (e: Exception) { item.error = e.message }
                 runOnUiThread { adapter.notifyDataSetChanged() }
             }
@@ -913,7 +947,7 @@ class MainActivity : Activity() {
                     if (bmp != null) setImageBitmap(bmp)
                     else {
                         setImageBitmap(Ui.noCoverBitmap())
-                        if (item.tag?.cover != null && !item.thumbLoading) {
+                        if (item.hasCover && !item.thumbLoading) {
                             item.thumbLoading = true
                             thumbExecutor.execute {
                                 try { item.thumbnail() } catch (e: Exception) { }

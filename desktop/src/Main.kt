@@ -35,32 +35,62 @@ class Row(val file: File) {
     var checked = false
     var tag: TagData? = null
     var status: String = ""
+    /** True when the last operation on this file failed. */
+    var failed: Boolean = false
+    /** Whether the file has cover art (the bytes themselves are not kept). */
+    var hasCover: Boolean = false
+    private var coverKey: Int = 0
     private var icon: ImageIcon? = null
     private var iconFor: Int = 0
 
+    /**
+     * Adopts a freshly read tag for list display, dropping the (often
+     * megabytes large) cover bytes from memory. Flows that really need
+     * the full tag re-read it from the file.
+     */
+    fun setTagLight(full: TagData?) {
+        if (full == null) {
+            tag = null; hasCover = false; coverKey = 0; icon = null; iconFor = 0
+            return
+        }
+        hasCover = full.cover != null
+        coverKey = full.cover?.contentHashCode() ?: 0
+        tag = full.copy(cover = null)
+        if (iconFor != coverKey) { icon = null; iconFor = 0 }
+    }
+
+    /** Decodes the 40px list icon from cover bytes already in hand. */
+    fun primeIcon(cover: ByteArray) {
+        iconFor = coverKey
+        icon = decodeIcon(cover)
+    }
+
+    private fun decodeIcon(cover: ByteArray): ImageIcon? = try {
+        // Subsampled decode: a 40px icon must not decode a 3000px cover.
+        val iis = ImageIO.createImageInputStream(cover.inputStream())
+        val readers = ImageIO.getImageReaders(iis)
+        if (!readers.hasNext()) null
+        else {
+            val reader = readers.next()
+            reader.input = iis
+            val w = reader.getWidth(0); val hh = reader.getHeight(0)
+            var sub = 1
+            while (w / sub > 80 || hh / sub > 80) sub *= 2
+            val param = reader.defaultReadParam
+            if (sub > 1) param.setSourceSubsampling(sub, sub, 0, 0)
+            val img = reader.read(0, param)
+            reader.dispose()
+            ImageIcon(img.getScaledInstance(40, 40, Image.SCALE_SMOOTH))
+        }
+    } catch (e: Exception) { null }
+
     fun coverIcon(): ImageIcon? {
-        val cover = tag?.cover ?: run { icon = null; iconFor = 0; return null }
-        val h = cover.contentHashCode()
-        if (icon != null && iconFor == h) return icon
-        iconFor = h
-        icon = try {
-            // Subsampled decode: a 40px icon must not decode a 3000px cover.
-            val iis = ImageIO.createImageInputStream(cover.inputStream())
-            val readers = ImageIO.getImageReaders(iis)
-            if (!readers.hasNext()) null
-            else {
-                val reader = readers.next()
-                reader.input = iis
-                val w = reader.getWidth(0); val hh = reader.getHeight(0)
-                var sub = 1
-                while (w / sub > 80 || hh / sub > 80) sub *= 2
-                val param = reader.defaultReadParam
-                if (sub > 1) param.setSourceSubsampling(sub, sub, 0, 0)
-                val img = reader.read(0, param)
-                reader.dispose()
-                ImageIcon(img.getScaledInstance(40, 40, Image.SCALE_SMOOTH))
-            }
-        } catch (e: Exception) { null }
+        if (!hasCover) { icon = null; iconFor = 0; return null }
+        if (icon != null && iconFor == coverKey) return icon
+        val cover = tag?.cover ?: try { TagService.read(file).cover }
+            catch (e: Exception) { null } ?: run { icon = null; iconFor = 0; return null }
+        iconFor = coverKey
+        icon = decodeIcon(cover)
         return icon
     }
 }
@@ -76,7 +106,8 @@ var sortMode = 0
 fun shownRows(): List<Row> {
     val filtered = when (filterMode) {
         1 -> rows.filter { it.tag == null || it.tag!!.isBasicallyEmpty() }
-        2 -> rows.filter { it.tag?.cover == null }
+        2 -> rows.filter { !it.hasCover }
+        3 -> rows.filter { it.failed }
         else -> rows
     }
     return when (sortMode) {
@@ -175,8 +206,11 @@ fun addFiles(files: List<File>, startChecked: Boolean = false) {
             if (rows.any { it.file.absolutePath == f.absolutePath }) continue
             // Files added one by one start out checked; folder loads do not.
             val row = Row(f).apply { checked = startChecked }
-            try { row.tag = TagService.read(f) } catch (e: Exception) { row.status = e.message ?: "" }
-            try { row.coverIcon() } catch (e: Exception) { } // warm the icon cache off the EDT
+            try {
+                val full = TagService.read(f)
+                row.setTagLight(full)
+                if (full.cover != null) row.primeIcon(full.cover!!) // icon from bytes in hand
+            } catch (e: Exception) { row.status = e.message ?: ""; row.failed = true }
             rows.add(row)
         }
         refresh()
@@ -184,6 +218,10 @@ fun addFiles(files: List<File>, startChecked: Boolean = false) {
 }
 
 fun checkedRows(): List<Row> = rows.filter { it.checked }
+
+fun fmtSize(bytes: Long): String =
+    if (bytes >= 1024 * 1024) String.format(Locale.US, "%.1f MB", bytes / 1048576.0)
+    else "${bytes / 1024} KB"
 
 fun info(msg: String) = SwingUtilities.invokeLater {
     JOptionPane.showMessageDialog(frame, msg, "OtoTag", JOptionPane.INFORMATION_MESSAGE)
@@ -631,6 +669,17 @@ fun showSettings() {
     bottom.add(JLabel(Strings.t("acoustid_key"))); bottom.add(acoustidField)
     val darkBox = JCheckBox(Strings.t("dark_mode"), darkMode)
     bottom.add(darkBox); bottom.add(JLabel(""))
+    val backupLabel = JLabel("${Strings.t("backup")}: ${fmtSize(Backup.totalSize(backupDir))}")
+    bottom.add(backupLabel)
+    bottom.add(JButton(Strings.t("delete_all")).apply {
+        addActionListener {
+            if (JOptionPane.showConfirmDialog(frame, Strings.t("confirm_delete_all"),
+                    Strings.t("backup"), JOptionPane.OK_CANCEL_OPTION) == JOptionPane.OK_OPTION) {
+                Backup.deleteAll(backupDir)
+                backupLabel.text = "${Strings.t("backup")}: ${fmtSize(Backup.totalSize(backupDir))}"
+            }
+        }
+    })
     panel.add(bottom, BorderLayout.SOUTH)
     val res = JOptionPane.showConfirmDialog(frame, panel, Strings.t("settings"),
         JOptionPane.OK_CANCEL_OPTION)
@@ -647,10 +696,13 @@ fun showSettings() {
 }
 
 fun applySearchTo(row: Row, label: String?, bulk: Boolean, onSkip: () -> Unit, onStop: () -> Unit, done: () -> Unit) {
-    searchAndPick(row.tag, NameParser.parse(row.file), row.file, label, onSkip, onStop, bulk) { picked ->
+    // The search, the diff preview and the partial merge need the FULL
+    // tag (with cover); the list itself only keeps the light copy.
+    val fullOld = try { TagService.read(row.file) } catch (e: Exception) { row.tag }
+    searchAndPick(fullOld, NameParser.parse(row.file), row.file, label, onSkip, onStop, bulk) { picked ->
         // Partial sources (Audius / NDL) only fill what they know.
         val merged = if (picked.partial)
-            picked.mergedOver(row.tag ?: TagData()) else picked
+            picked.mergedOver(fullOld ?: TagData()) else picked
         // The cover cap applies to covers the candidate brought; a cover
         // the file already had is left as it is.
         val newTag = if (picked.cover != null)
@@ -661,12 +713,16 @@ fun applySearchTo(row: Row, label: String?, bulk: Boolean, onSkip: () -> Unit, o
             try {
                 Backup.backup(row.file, backupDir)
                 TagService.write(row.file, newTag)
-                row.tag = TagService.read(row.file)
+                row.setTagLight(TagService.read(row.file))
                 row.status = Strings.t("done")
+                row.failed = false
                 // applied via search: uncheck it so a re-run skips it
                 row.checked = false
                 ok = true
-            } catch (e: Exception) { row.status = "${Strings.t("failed")}: ${e.message}" }
+            } catch (e: Exception) {
+                row.status = "${Strings.t("failed")}: ${e.message}"
+                row.failed = true
+            }
             refresh()
             if (!ok) {
                 fail("${row.file.name}\n${row.status}")
@@ -936,20 +992,26 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
             try {
                 Backup.backup(row.file, backupDir)
                 TagService.write(row.file, d)
-                row.tag = TagService.read(row.file)
+                row.setTagLight(TagService.read(row.file))
                 row.checked = false // acted on: drop the check
                 row.status = Strings.t("done")
+                row.failed = false
                 if (newBase.isNotBlank() && newBase != row.file.nameWithoutExtension) {
                     val renamed = Renamer.rename(row.file, newBase)
                     if (renamed != null) {
                         Backup.move(row.file, renamed, backupDir)
                         val idx = rows.indexOf(row)
                         if (idx >= 0) rows[idx] = Row(renamed).also {
-                            it.checked = false; it.tag = row.tag; it.status = row.status
+                            it.checked = false; it.status = row.status
+                            it.setTagLight(try { TagService.read(renamed) }
+                                catch (e: Exception) { null })
                         }
                     } else fail = Strings.t("collision")
                 }
-            } catch (e: Exception) { fail = "${e.javaClass.simpleName}: ${e.message}" }
+            } catch (e: Exception) {
+                row.failed = true
+                fail = "${e.javaClass.simpleName}: ${e.message}"
+            }
             SwingUtilities.invokeLater {
                 refresh()
                 if (fail == null) dispose() else fail(fail!!)
@@ -984,7 +1046,8 @@ fun bulkEdit() {
     thread {
         for (row in sel) {
             try {
-                val cur = row.tag ?: TagService.read(row.file)
+                // Full read: the write needs the cover bytes the list drops.
+                val cur = TagService.read(row.file)
                 fun v(k: String) = inputs[k]!!.text.ifBlank { when (k) {
                     "album" -> cur.album; "album_artist" -> cur.albumArtist
                     "genre" -> cur.genre; "year" -> cur.year; "disc" -> cur.disc
@@ -998,9 +1061,13 @@ fun bulkEdit() {
                     cover = coverBytes ?: cur.cover)
                 Backup.backup(row.file, backupDir)
                 TagService.write(row.file, d)
-                row.tag = TagService.read(row.file)
+                row.setTagLight(TagService.read(row.file))
                 row.status = Strings.t("done")
-            } catch (e: Exception) { row.status = "${Strings.t("failed")}: ${e.message}" }
+                row.failed = false
+            } catch (e: Exception) {
+                row.status = "${Strings.t("failed")}: ${e.message}"
+                row.failed = true
+            }
             refresh()
         }
     }
@@ -1078,11 +1145,14 @@ fun undoSelected() {
                 val ok = if (gen == null) Backup.restore(row.file, backupDir)
                     else Backup.restoreAt(row.file, backupDir, gen)
                 if (ok) {
-                    row.tag = TagService.read(row.file)
+                    row.setTagLight(TagService.read(row.file))
                     row.checked = false // acted on: drop the check
-                    row.status = Strings.t("restored"); restored++
+                    row.status = Strings.t("restored"); row.failed = false; restored++
                 }
-            } catch (e: Exception) { row.status = "${Strings.t("failed")}: ${e.message}" }
+            } catch (e: Exception) {
+                row.status = "${Strings.t("failed")}: ${e.message}"
+                row.failed = true
+            }
         }
         refresh()
         info(if (restored > 0) Strings.t("restored") else Strings.t("no_backup"))
@@ -1234,7 +1304,8 @@ fun main() {
             addActionListener { showSettings() }
         })
         val filterBox = JComboBox(arrayOf(
-            Strings.t("filter_all"), Strings.t("filter_notag"), Strings.t("filter_nocover")))
+            Strings.t("filter_all"), Strings.t("filter_notag"), Strings.t("filter_nocover"),
+            Strings.t("filter_error")))
         filterBox.selectedIndex = filterMode
         filterBox.addActionListener {
             if (filterBox.selectedIndex != filterMode) {
@@ -1314,12 +1385,16 @@ fun main() {
                             thread {
                                 for (row in sel) {
                                     try {
-                                        val cur = row.tag ?: TagService.read(row.file)
+                                        val cur = TagService.read(row.file)
                                         val d = cur.copy(cover = bytes)
                                         Backup.backup(row.file, backupDir)
                                         TagService.write(row.file, d)
-                                        row.tag = TagService.read(row.file)
-                                    } catch (e: Exception) { row.status = "${Strings.t("failed")}: ${e.message}" }
+                                        row.setTagLight(TagService.read(row.file))
+                                        row.failed = false
+                                    } catch (e: Exception) {
+                                        row.status = "${Strings.t("failed")}: ${e.message}"
+                                        row.failed = true
+                                    }
                                 }
                                 refresh()
                             }

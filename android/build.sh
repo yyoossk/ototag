@@ -30,13 +30,24 @@ echo "-- Kotlin (core + android UI)"
     $(find "$PROJ/core/src" -name '*.kt') \
     $(find "$ROOT/app/src" -name '*.kt')
 
-echo "-- dex"
-"$BT/d8" --lib "$ANDROID_JAR" --output "$BUILD/dex" \
-    $(find "$BUILD/classes" -name '*.class') \
-    "$PROJ/libs-android/aar/classes.jar" \
-    "$PROJ/spike/libs/kotlinx-io-core-jvm-0.9.1.jar" \
-    "$PROJ/spike/libs/kotlinx-io-bytestring-jvm-0.9.1.jar" \
-    "$PROJ/spike/libs/kotlin-stdlib-2.4.20.jar"
+echo "-- dex (R8 shrink when available, else d8)"
+if [ -f "$TC/shrink/r8.jar" ]; then
+    "$JAVA_HOME/bin/java" -cp "$TC/shrink/r8.jar" com.android.tools.r8.R8 \
+        --release --min-api 26 --lib "$ANDROID_JAR" \
+        --pg-conf "$ROOT/r8-rules.pro" --output "$BUILD/dex" \
+        $(find "$BUILD/classes" -name '*.class') \
+        "$PROJ/libs-android/aar/classes.jar" \
+        "$PROJ/spike/libs/kotlinx-io-core-jvm-0.9.1.jar" \
+        "$PROJ/spike/libs/kotlinx-io-bytestring-jvm-0.9.1.jar" \
+        "$PROJ/spike/libs/kotlin-stdlib-2.4.20.jar"
+else
+    "$BT/d8" --lib "$ANDROID_JAR" --output "$BUILD/dex" \
+        $(find "$BUILD/classes" -name '*.class') \
+        "$PROJ/libs-android/aar/classes.jar" \
+        "$PROJ/spike/libs/kotlinx-io-core-jvm-0.9.1.jar" \
+        "$PROJ/spike/libs/kotlinx-io-bytestring-jvm-0.9.1.jar" \
+        "$PROJ/spike/libs/kotlin-stdlib-2.4.20.jar"
+fi
 
 echo "-- resources + package"
 "$BT/aapt2" compile --dir "$ROOT/app/res" -o "$BUILD/res.zip"
