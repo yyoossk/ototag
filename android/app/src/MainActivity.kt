@@ -966,9 +966,11 @@ class MainActivity : Activity() {
             .setView(scroll)
             .setNeutralButton(Strings.t("strip_num"), null)
             .setPositiveButton(Strings.t("apply")) { _, _ ->
+                // Decide the targets here, while the fields still exist.
                 var failed = 0
                 val failNotes = ArrayList<String>()
                 val targets = HashSet<String>()
+                val jobs = ArrayList<Pair<Item, String>>()
                 for ((item, et) in fields) {
                     val newBase = Renamer.sanitize(et.text.toString())
                     if (newBase.isBlank()) { failed++; continue }
@@ -978,17 +980,33 @@ class MainActivity : Activity() {
                         Items.list.any { it !== item && it.name.equals(newName, ignoreCase = true) }) {
                         failed++; continue
                     }
-                    if (!SafStore.rename(this, item, newName)) {
-                        failed++
-                        val d = SafStore.lastRenameDetail
-                        failNotes.add(if (d.isBlank()) item.name
-                            else "${item.name}\n$d")
-                    }
-                    else item.checked = false // acted on: drop the check
+                    jobs.add(item to newName)
                 }
-                adapter.notifyDataSetChanged()
-                if (failed == 0) toast(Strings.t("done"))
-                else Ui.failDialog(this, failNotes.joinToString("\n\n"))
+                if (jobs.isEmpty()) {
+                    if (failed > 0) toast("${Strings.t("failed")}: $failed")
+                    return@setPositiveButton
+                }
+                // The renames themselves run in the background: a rename
+                // can fall back to copying the whole file, and doing any
+                // of this on the UI thread left the screen unresponsive
+                // after a rename.
+                toast(Strings.t("working"))
+                thread {
+                    for ((item, newName) in jobs) {
+                        if (!SafStore.rename(this, item, newName)) {
+                            failed++
+                            val d = SafStore.lastRenameDetail
+                            failNotes.add(if (d.isBlank()) item.name
+                                else "${item.name}\n$d")
+                        }
+                        else item.checked = false // acted on: drop the check
+                    }
+                    runOnUiThread {
+                        adapter.notifyDataSetChanged()
+                        if (failed == 0) toast(Strings.t("done"))
+                        else Ui.failDialog(this, failNotes.joinToString("\n\n"))
+                    }
+                }
             }
             .setNegativeButton(Strings.t("cancel"), null)
             .create()
