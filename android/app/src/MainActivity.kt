@@ -474,26 +474,6 @@ class MainActivity : Activity() {
         header.addView(View(this).apply {
             layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
         })
-        header.addView(Button(this).apply {
-            text = Strings.t("history"); Ui.styleButton(this, Ui.TEAL)
-            setOnClickListener {
-                startActivity(Intent(this@MainActivity, HistoryActivity::class.java))
-            }
-        })
-        header.addView(Button(this).apply {
-            text = Strings.t("settings"); Ui.styleButton(this, Ui.MAGENTA)
-            setOnClickListener { showSettings() }
-        })
-        header.addView(Button(this).apply {
-            text = Strings.t("help_title"); Ui.styleButton(this, Ui.VIOLET)
-            setOnClickListener {
-                AlertDialog.Builder(this@MainActivity)
-                    .setTitle(Strings.t("help_title"))
-                    .setMessage(Strings.t("help_body"))
-                    .setPositiveButton(Strings.t("ok"), null)
-                    .show()
-            }
-        })
         header.addView(TextView(this).apply {
             text = Strings.t("language"); textSize = 13f
             setTextColor(Ui.SUB)
@@ -515,6 +495,37 @@ class MainActivity : Activity() {
         }
         header.addView(langSpinner)
         root.addView(header)
+
+        // second header row: history / settings / help as equal buttons
+        val headerBtns = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(8), dp(4), dp(8), dp(4))
+            setBackgroundColor(Ui.CARD)
+        }
+        fun headBtn(label: String, color: Int, fn: () -> Unit) {
+            headerBtns.addView(Button(this).apply {
+                text = label
+                textSize = 14f
+                isSingleLine = true
+                Ui.styleButton(this, color)
+                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+                    marginEnd = dp(6)
+                }
+                setOnClickListener { fn() }
+            })
+        }
+        headBtn(Strings.t("history"), Ui.TEAL) {
+            startActivity(Intent(this, HistoryActivity::class.java))
+        }
+        headBtn(Strings.t("settings"), Ui.MAGENTA) { showSettings() }
+        headBtn(Strings.t("help_title"), Ui.VIOLET) {
+            AlertDialog.Builder(this)
+                .setTitle(Strings.t("help_title"))
+                .setMessage(Strings.t("help_body"))
+                .setPositiveButton(Strings.t("ok"), null)
+                .show()
+        }
+        root.addView(headerBtns)
 
         // top row: two equal buttons, same height
         val top = LinearLayout(this).apply {
@@ -562,6 +573,8 @@ class MainActivity : Activity() {
             }
             override fun onNothingSelected(p: AdapterView<*>) {}
         }
+        filterSpinner.layoutParams = LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         filterRow.addView(filterSpinner)
         val sortSpinner = Spinner(this)
         sortSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
@@ -577,6 +590,8 @@ class MainActivity : Activity() {
         filterRow.addView(TextView(this).apply {
             text = Strings.t("sort"); setTextColor(Ui.SUB); setPadding(dp(12), 0, 0, 0)
         })
+        sortSpinner.layoutParams = LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         filterRow.addView(sortSpinner)
         filterRow.addView(Button(this).apply {
             text = "↑↓"
