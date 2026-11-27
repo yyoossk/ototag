@@ -281,6 +281,16 @@ fun main() {
     MusixmatchClient.apiKey = "BADKEY"
     check("mxm bad key", MusixmatchClient.fetchLyrics("Lemon", "米津玄師") == null, "")
 
+    // --- Lyrics.ovh (recorded real response) ---
+    LyricsOvhClient.fetcher = { url ->
+        if (url.contains("Queen")) File("testdata/lyricsovh.json").readBytes()
+        else throw IllegalStateException("HTTP 404")
+    }
+    val ovh = LyricsOvhClient.fetchLyrics("Queen", "Bohemian Rhapsody")
+    check("lyricsovh found", ovh != null && ovh.startsWith("Is this the real life"),
+        ovh?.take(20) ?: "null")
+    check("lyricsovh missing", LyricsOvhClient.fetchLyrics("Nobody", "Nothing") == null, "")
+
     // --- Update history (fixture built from the real published releases) ---
     UpdateChecker.fetcher = { File("testdata/github-releases.json").readBytes() }
     val rels = UpdateChecker.fetchReleases()

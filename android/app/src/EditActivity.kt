@@ -197,7 +197,7 @@ class EditActivity : Activity() {
 
     /**
      * Fetches lyrics for the field values and fills the box: LRCLIB first,
-     * then Musixmatch when the user has entered their (free) API key.
+     * then Lyrics.ovh, then Musixmatch when a (free) API key is entered.
      */
     private fun fetchLyrics() {
         val title = inputs["title"]?.text?.toString() ?: ""
@@ -211,6 +211,9 @@ class EditActivity : Activity() {
             var text: String? = try {
                 LrclibClient.fetchBest(title, artist, album, dur)?.plainLyrics
             } catch (e: Exception) { null }
+            if (text == null) {
+                text = LyricsOvhClient.fetchLyrics(artist, title)
+            }
             if (text == null && key.isNotBlank()) {
                 text = try {
                     MusixmatchClient.apiKey = key

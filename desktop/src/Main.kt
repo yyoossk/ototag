@@ -648,6 +648,9 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
             var text: String? = try {
                 LrclibClient.fetchBest(title, artist, album, dur)?.plainLyrics
             } catch (e: Exception) { null }
+            if (text == null) {
+                text = LyricsOvhClient.fetchLyrics(artist, title)
+            }
             if (text == null && key.isNotBlank()) {
                 text = try {
                     MusixmatchClient.apiKey = key
