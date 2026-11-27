@@ -81,6 +81,15 @@ object Renamer {
         return sanitize(s)
     }
 
+    /**
+     * Substitution values taken from the file name itself. Renaming only
+     * ever renames the file, so the pattern works on what the name already
+     * says (its own track number, title, artist) — never on tag contents.
+     */
+    fun dataFromName(p: ParsedName): TagData = TagData(
+        title = p.title, artist = p.artist, album = p.albumHint, track = p.trackNo
+    )
+
     /** "01. Title" style base name built from applied tags; "" when there is no title. */
     fun nameFromTag(d: TagData): String {
         if (d.title.isBlank()) return ""

@@ -212,6 +212,14 @@ fun main() {
     check("vgmdb tag + cover", vgTag.title == "サンプルの歌" && vgTag.cover != null &&
         vgTag.cover!!.size > 1000 && !vgTag.coverFetchFailed)
 
+    // ---- rename works on the file name alone (never on tag contents) ----
+    val rp = NameParser.parse(java.io.File("08. IN MY DREAM (1).mp3"))
+    val nd = Renamer.dataFromName(rp)
+    check("rename keeps filename track", nd.track == "08", nd.track)
+    val rout = Renamer.applyPattern("%track% - %title%", nd, "x")
+    check("rename pattern starts from name", rout.startsWith("08 - IN MY DREAM"), rout)
+
     println(if (failures == 0) "ALL PASS" else "FAILURES: $failures")
     kotlin.system.exitProcess(if (failures == 0) 0 else 1)
 }
+

@@ -54,6 +54,32 @@ object Ui {
         intArrayOf(VIOLET, PINK)
     ).apply { cornerRadius = dpf(ctx, radiusDp) }
 
+    private var noCover: android.graphics.Bitmap? = null
+
+    /**
+     * "No image" placeholder for files without cover art: a pale panel with
+     * a muted music note, drawn once and reused everywhere.
+     */
+    fun noCoverBitmap(): android.graphics.Bitmap {
+        noCover?.let { return it }
+        val size = 156
+        val bmp = android.graphics.Bitmap.createBitmap(
+            size, size, android.graphics.Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(bmp)
+        canvas.drawColor(0xFFE9E5F2.toInt())
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFA79BCB.toInt()
+            textSize = 96f
+            textAlign = android.graphics.Paint.Align.CENTER
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+        }
+        val fm = paint.fontMetrics
+        val y = size / 2f - (fm.ascent + fm.descent) / 2f
+        canvas.drawText("♪", size / 2f, y, paint)
+        noCover = bmp
+        return bmp
+    }
+
     fun card(ctx: Context, radiusDp: Float = 12f): GradientDrawable = GradientDrawable().apply {
         setColor(CARD)
         cornerRadius = dpf(ctx, radiusDp)

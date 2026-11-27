@@ -526,12 +526,13 @@ class MainActivity : Activity() {
         layout.addView(TextView(this).apply { text = Strings.t("pattern") })
         layout.addView(patternInput)
         layout.addView(preview)
+        // Renaming only renames the file: the pattern works on the values
+        // the file name itself carries, never on tag contents.
+        fun nameData(item: Item) = Renamer.dataFromName(NameParser.parse(java.io.File(item.name)))
         fun updatePreview() {
             val sb = StringBuilder()
             for (item in sel) {
-                val d = item.tag
-                val newBase = if (d != null) Renamer.applyPattern(patternInput.text.toString(), d, item.name.substringBeforeLast('.'))
-                    else item.name.substringBeforeLast('.')
+                val newBase = Renamer.applyPattern(patternInput.text.toString(), nameData(item), item.name.substringBeforeLast('.'))
                 sb.append(item.name).append("  ->  ").append(newBase).append('.').append(item.ext).append('\n')
             }
             preview.text = sb.toString()
@@ -541,21 +542,14 @@ class MainActivity : Activity() {
             override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
             override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
         })
-        thread {
-            for (item in sel) {
-                try { SafStore.ensureLocal(this, item); if (item.tag == null) item.tag = TagService.read(item.local!!) }
-                catch (e: Exception) { item.error = e.message }
-            }
-            runOnUiThread { updatePreview() }
-        }
+        updatePreview()
         AlertDialog.Builder(this)
             .setTitle(Strings.t("rename_preview"))
             .setView(layout)
             .setPositiveButton(Strings.t("apply")) { _, _ ->
                 var failed = 0
                 for (item in sel) {
-                    val d = item.tag ?: continue
-                    val newBase = Renamer.applyPattern(patternInput.text.toString(), d, item.name.substringBeforeLast('.'))
+                    val newBase = Renamer.applyPattern(patternInput.text.toString(), nameData(item), item.name.substringBeforeLast('.'))
                     val newName = newBase + "." + item.ext
                     if (newName == item.name) continue
                     if (Items.list.any { it !== item && it.name == newName }) { failed++; continue }
@@ -596,13 +590,24 @@ class MainActivity : Activity() {
         thread {
             val items = try { SafStore.enumerateTree(this, treeUri) } catch (e: Exception) { emptyList() }
             Items.list.clear(); Items.list.addAll(items)
-            for (item in Items.list) {
-                try {
-                    SafStore.ensureLocal(this, item)
-                    item.tag = TagService.read(item.local!!)
-                } catch (e: Exception) { item.error = e.message }
-                runOnUiThread { adapter.notifyDataSetChanged() }
+            runOnUiThread { adapter.notifyDataSetChanged() }
+            // Read tags in parallel so thumbnails and titles fill in fast.
+            val next = java.util.concurrent.atomic.AtomicInteger(0)
+            val workers = (1..4).map {
+                thread {
+                    while (true) {
+                        val i = next.getAndIncrement()
+                        if (i >= items.size) break
+                        val item = items[i]
+                        try {
+                            SafStore.ensureLocal(this, item)
+                            item.tag = TagService.read(item.local!!)
+                        } catch (e: Exception) { item.error = e.message }
+                        runOnUiThread { adapter.notifyDataSetChanged() }
+                    }
+                }
             }
+            workers.forEach { it.join() }
         }
     }
 
@@ -619,8 +624,8 @@ class MainActivity : Activity() {
                     SafStore.ensureLocal(this, item)
                     item.tag = TagService.read(item.local!!)
                 } catch (e: Exception) { item.error = e.message }
+                runOnUiThread { adapter.notifyDataSetChanged() }
             }
-            runOnUiThread { adapter.notifyDataSetChanged() }
         }
     }
 
@@ -698,10 +703,7 @@ class MainActivity : Activity() {
                 } else {
                     val bmp = item.thumbnail()
                     if (bmp != null) setImageBitmap(bmp)
-                    else {
-                        setImageResource(android.R.drawable.ic_media_play)
-                        background = Ui.coverPlaceholder(this@MainActivity)
-                    }
+                    else setImageBitmap(Ui.noCoverBitmap())
                 }
                 setOnClickListener { togglePlay(item) }
             }

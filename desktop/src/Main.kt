@@ -14,6 +14,19 @@ import javax.swing.*
 import javax.swing.table.AbstractTableModel
 import kotlin.concurrent.thread
 
+/** "No image" placeholder icon for rows without cover art. */
+val noCoverIcon: ImageIcon by lazy {
+    val img = java.awt.image.BufferedImage(40, 40, java.awt.image.BufferedImage.TYPE_INT_RGB)
+    val g = img.createGraphics()
+    g.color = java.awt.Color(233, 229, 242); g.fillRect(0, 0, 40, 40)
+    g.color = java.awt.Color(167, 155, 203)
+    g.font = java.awt.Font("SansSerif", java.awt.Font.BOLD, 24)
+    val fm = g.fontMetrics; val s = "♪"
+    g.drawString(s, (40 - fm.stringWidth(s)) / 2, (40 - fm.height) / 2 + fm.ascent)
+    g.dispose()
+    ImageIcon(img)
+}
+
 class Row(val file: File) {
     var checked = false
     var tag: TagData? = null
@@ -76,7 +89,7 @@ class RowModel : AbstractTableModel() {
     override fun isCellEditable(r: Int, c: Int) = c == 0
     override fun getValueAt(r: Int, c: Int): Any = when (c) {
         0 -> rows[r].checked
-        1 -> rows[r].coverIcon() ?: ""
+        1 -> rows[r].coverIcon() ?: noCoverIcon
         2 -> rows[r].file.name
         3 -> rows[r].tag?.title ?: ""
         4 -> rows[r].tag?.artist ?: ""
@@ -268,13 +281,13 @@ fun searchAndPick(
             for (t in itunes) {
                 val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
                 options.add(DlgOpt(t.title, "${t.artist} — ${t.album}$yr · iTunes",
-                    t.artworkUrl.ifBlank { null }) {
+                    t.artworkUrl.ifBlank { null }?.replace("600x600bb.jpg", "200x200bb.jpg")) {
                     ItunesClient.buildTag(t)
                 })
             }
             for (t in deezer) {
                 options.add(DlgOpt(t.title, "${t.artist} — ${t.album} · Deezer",
-                    t.coverUrl.ifBlank { null }) {
+                    t.coverUrl.ifBlank { null }?.replace("1000x1000", "250x250")) {
                     DeezerClient.buildTag(t)
                 })
             }
@@ -629,9 +642,9 @@ fun bulkRename() {
         val sb = StringBuilder()
         val seen = HashSet<String>()
         for (row in sel) {
-            val d = row.tag
-            val newBase = if (d != null) Renamer.applyPattern(patternField.text, d, row.file.nameWithoutExtension)
-                else row.file.nameWithoutExtension
+            // Renaming only renames the file: values come from the file name.
+            val d = Renamer.dataFromName(NameParser.parse(row.file))
+            val newBase = Renamer.applyPattern(patternField.text, d, row.file.nameWithoutExtension)
             val newName = newBase + "." + row.file.extension
             val mark = if (!seen.add(newName.lowercase()) || (File(row.file.parentFile, newName).exists() && newName != row.file.name)) " [${Strings.t("collision")}]" else ""
             sb.append(row.file.name).append("  ->  ").append(newName).append(mark).append('\n')
@@ -651,7 +664,7 @@ fun bulkRename() {
     thread {
         var failed = 0
         for (row in sel) {
-            val d = row.tag ?: continue
+            val d = Renamer.dataFromName(NameParser.parse(row.file))
             val newBase = Renamer.applyPattern(patternField.text, d, row.file.nameWithoutExtension)
             if (newBase + "." + row.file.extension == row.file.name) continue
             val renamed = Renamer.rename(row.file, newBase)

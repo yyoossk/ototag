@@ -207,6 +207,48 @@ object SearchFlow {
     /** One candidate row: cover thumbnail, big title, smaller artist/album line. */
     private class Opt(val title: String, val sub: String, val iconUrl: String?, val build: () -> TagData)
 
+    // Candidate cover thumbnails: cached for the whole session and decoded
+    // at thumbnail size, so reopening a search shows them instantly.
+    private val iconCache = java.util.Collections.synchronizedMap(
+        HashMap<String, android.graphics.Bitmap>())
+    private val iconLoading = java.util.Collections.synchronizedSet(HashSet<String>())
+    private val iconWaiters = java.util.Collections.synchronizedMap(
+        HashMap<String, MutableList<() -> Unit>>())
+
+    /** Smaller source variant where the CDN offers one (display is ~52dp). */
+    private fun thumbUrl(url: String): String = url
+        .replace("600x600bb.jpg", "200x200bb.jpg")
+        .replace("1000x1000", "250x250")
+
+    private fun loadIcon(url: String, done: () -> Unit) {
+        if (iconCache.containsKey(url)) { done(); return }
+        synchronized(iconWaiters) { iconWaiters.getOrPut(url) { mutableListOf() }.add(done) }
+        if (!iconLoading.add(url)) return
+        thread {
+            try {
+                val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                conn.setRequestProperty("User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+                conn.connectTimeout = 10000
+                conn.readTimeout = 15000
+                val bytes = conn.inputStream.readBytes()
+                val bounds = android.graphics.BitmapFactory.Options().apply {
+                    inJustDecodeBounds = true
+                }
+                android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                var sample = 1
+                while (bounds.outWidth / sample > 168 || bounds.outHeight / sample > 168) sample *= 2
+                val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+                val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                if (bmp != null) iconCache[url] = bmp
+            } catch (e: Exception) { }
+            iconLoading.remove(url)
+            val waiters = synchronized(iconWaiters) { iconWaiters.remove(url) } ?: emptyList()
+            for (w in waiters) w()
+        }
+    }
+
     private fun showChooser(
         activity: Activity,
         cands: List<MbCandidate>,
@@ -246,13 +288,13 @@ object SearchFlow {
         for (t in itunes) {
             val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
             options.add(Opt(t.title, "${t.artist} — ${t.album}$yr · iTunes",
-                t.artworkUrl.ifBlank { null }) {
+                t.artworkUrl.takeIf { it.isNotBlank() }?.let { thumbUrl(it) }) {
                 ItunesClient.buildTag(t)
             })
         }
         for (t in deezer) {
             options.add(Opt(t.title, "${t.artist} — ${t.album} · Deezer",
-                t.coverUrl.ifBlank { null }) {
+                t.coverUrl.takeIf { it.isNotBlank() }?.let { thumbUrl(it) }) {
                 DeezerClient.buildTag(t)
             })
         }
@@ -264,24 +306,10 @@ object SearchFlow {
             })
         }
         val d = { v: Int -> (v * activity.resources.displayMetrics.density).toInt() }
-        // Cover thumbnails load in the background; rows refresh as they land.
-        val iconCache = java.util.Collections.synchronizedMap(
-            HashMap<String, android.graphics.Bitmap>())
-        val iconLoading = java.util.Collections.synchronizedSet(HashSet<String>())
         var adapterRef: android.widget.ArrayAdapter<Opt>? = null
-        fun loadIcon(url: String) {
-            if (iconCache.containsKey(url) || !iconLoading.add(url)) return
-            thread {
-                try {
-                    val bmp = java.net.URL(url).openStream().use {
-                        android.graphics.BitmapFactory.decodeStream(it)
-                    }
-                    if (bmp != null) iconCache[url] = bmp
-                } catch (e: Exception) { }
-                iconLoading.remove(url)
-                activity.runOnUiThread { adapterRef?.notifyDataSetChanged() }
-            }
-        }
+        val refreshIcons = { activity.runOnUiThread { adapterRef?.notifyDataSetChanged() } }
+        // Start fetching every candidate's cover right away, not on scroll.
+        for (o in options) o.iconUrl?.let { loadIcon(it, refreshIcons) }
         val adapter = object : android.widget.ArrayAdapter<Opt>(activity, 0, options) {
             override fun getView(pos: Int, convertView: android.view.View?, parent: android.view.ViewGroup): android.view.View {
                 val o = options[pos]
@@ -297,8 +325,8 @@ object SearchFlow {
                     val bmp = if (url != null) iconCache[url] else null
                     if (bmp != null) setImageBitmap(bmp)
                     else {
-                        background = Ui.coverPlaceholder(activity)
-                        if (url != null) loadIcon(url)
+                        setImageBitmap(Ui.noCoverBitmap())
+                        if (url != null) loadIcon(url, refreshIcons)
                     }
                 })
                 val texts = android.widget.LinearLayout(activity).apply {
