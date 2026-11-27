@@ -241,13 +241,37 @@ fun searchAndPick(
                 else VgmdbClient.search(q2)
             }
         } catch (e: Exception) { emptyList() }
+        // Audius (indie catalog, no album info) as a sixth source; best effort only.
+        val audius = try {
+            if (!auto) AudiusClient.search(query)
+            else {
+                val q1 = listOf(tag?.title, tag?.artist)
+                    .filter { !it.isNullOrBlank() }.joinToString(" ")
+                    .ifBlank { parsed?.title ?: "" }
+                val q2 = parsed?.title ?: ""
+                val first = if (q1.isNotBlank()) AudiusClient.search(q1) else emptyList()
+                if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+                else AudiusClient.search(q2)
+            }
+        } catch (e: Exception) { emptyList() }
+        // NDL Search (Japanese legal-deposit catalog, album-level); best effort.
+        val ndl = try {
+            if (!auto) NdlClient.search(query)
+            else {
+                val q1 = tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title ?: ""
+                val q2 = tag?.album?.takeIf { it.isNotBlank() } ?: parsed?.albumHint ?: ""
+                val first = if (q1.isNotBlank()) NdlClient.search(q1) else emptyList()
+                if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+                else NdlClient.search(q2)
+            }
+        } catch (e: Exception) { emptyList() }
         if (stopped.get()) return@thread
         val cands = found.values.toList()
         SwingUtilities.invokeLater {
             progress?.dispose()
             if (stopped.get()) return@invokeLater
             if (cands.isEmpty() && atSongs.isEmpty() && itunes.isEmpty() &&
-                deezer.isEmpty() && vgmdb.isEmpty()) {
+                deezer.isEmpty() && vgmdb.isEmpty() && audius.isEmpty() && ndl.isEmpty()) {
                 if (mbError != null) { fail("${mbError.javaClass.simpleName}: ${mbError.message}"); onStop?.invoke() }
                 else { info(Strings.t("no_results")); onSkip?.invoke() }
                 return@invokeLater
@@ -298,6 +322,19 @@ fun searchAndPick(
                 options.add(DlgOpt(t.title, "${t.artist} — ${t.album}$yr · VGMdb",
                     t.coverThumbUrl.ifBlank { null }) {
                     VgmdbClient.buildTag(t)
+                })
+            }
+            for (t in audius) {
+                val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
+                options.add(DlgOpt(t.title, "${t.artist}$yr · Audius",
+                    t.coverThumbUrl.ifBlank { null }) {
+                    AudiusClient.buildTag(t)
+                })
+            }
+            for (r in ndl) {
+                val yr = if (r.year.isNotBlank()) " (${r.year})" else ""
+                options.add(DlgOpt(r.album, "${r.artist}$yr · NDL", null) {
+                    NdlClient.buildTag(r)
                 })
             }
             // Cover thumbnails load in the background; rows repaint as they land.
@@ -388,7 +425,10 @@ fun searchAndPick(
 }
 
 fun applySearchTo(row: Row, label: String?, bulk: Boolean, onSkip: () -> Unit, onStop: () -> Unit, done: () -> Unit) {
-    searchAndPick(row.tag, NameParser.parse(row.file), label, onSkip, onStop, bulk) { newTag ->
+    searchAndPick(row.tag, NameParser.parse(row.file), label, onSkip, onStop, bulk) { picked ->
+        // Partial sources (Audius / NDL) only fill what they know.
+        val newTag = if (picked.partial)
+            picked.mergedOver(row.tag ?: TagData()) else picked
         thread {
             var ok = false
             try {
@@ -453,6 +493,9 @@ fun searchApplySelected() {
 
 class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
     private val fields = HashMap<String, JTextField>()
+    private val lyricsArea = JTextArea(row.tag?.lyrics ?: "", 6, 34).apply {
+        lineWrap = true; wrapStyleWord = true
+    }
     private var coverBytes: ByteArray? = row.tag?.cover
     private var coverRemoved = false
     private var mbIds = (row.tag?.mbRecordingId ?: "") to (row.tag?.mbReleaseId ?: "")
@@ -479,6 +522,13 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
         addField("track", d.track); addField("track_total", d.trackTotal)
         addField("disc", d.disc); addField("disc_total", d.discTotal)
         addField("comment", d.comment); addField("isrc", d.isrc)
+
+        gc.gridx = 0; gc.gridy = y; panel.add(JLabel(Strings.t("lyrics")), gc)
+        gc.gridx = 1; panel.add(JScrollPane(lyricsArea), gc); y++
+        gc.gridx = 1; gc.gridy = y
+        panel.add(JButton(Strings.t("get_lyrics")).apply {
+            addActionListener { fetchLyrics() }
+        }, gc); y++
 
         gc.gridx = 0; gc.gridy = y; panel.add(JLabel(Strings.t("cover")), gc)
         gc.gridx = 1; panel.add(coverLabel, gc); y++
@@ -546,13 +596,32 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
     }
 
     private fun fillFrom(d: TagData) {
-        fun set(k: String, v: String) { fields[k]?.text = v }
+        // Partial candidates (Audius / NDL) must not blank out unknown fields.
+        fun set(k: String, v: String) { if (!d.partial || v.isNotBlank()) fields[k]?.text = v }
         set("title", d.title); set("artist", d.artist); set("album", d.album)
         set("album_artist", d.albumArtist); set("composer", d.composer); set("genre", d.genre)
         set("year", d.year); set("track", d.track); set("track_total", d.trackTotal)
         set("disc", d.disc); set("disc_total", d.discTotal); set("comment", d.comment); set("isrc", d.isrc)
-        mbIds = d.mbRecordingId to d.mbReleaseId
+        if (!d.partial || d.lyrics.isNotBlank()) lyricsArea.text = d.lyrics
+        if (!d.partial) mbIds = d.mbRecordingId to d.mbReleaseId
         if (d.cover != null) setCover(d.cover!!)
+    }
+
+    /** Fetches lyrics from LRCLIB for the field values and fills the area. */
+    private fun fetchLyrics() {
+        val title = fields["title"]?.text ?: ""
+        val artist = fields["artist"]?.text ?: ""
+        val album = fields["album"]?.text ?: ""
+        val dur = row.tag?.durationSec ?: 0
+        thread {
+            val entry = try {
+                LrclibClient.fetchBest(title, artist, album, dur)
+            } catch (e: Exception) { null }
+            SwingUtilities.invokeLater {
+                if (entry != null) lyricsArea.text = entry.plainLyrics
+                else info(Strings.t("no_lyrics"))
+            }
+        }
     }
 
     private fun collect(): TagData {
@@ -562,7 +631,8 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
             albumArtist = v("album_artist"), composer = v("composer"), genre = v("genre"),
             year = v("year"), track = v("track"), trackTotal = v("track_total"),
             disc = v("disc"), discTotal = v("disc_total"), comment = v("comment"),
-            isrc = v("isrc"), mbRecordingId = mbIds.first, mbReleaseId = mbIds.second,
+            isrc = v("isrc"), lyrics = lyricsArea.text,
+            mbRecordingId = mbIds.first, mbReleaseId = mbIds.second,
             cover = if (coverRemoved) null else coverBytes)
     }
 

@@ -16,15 +16,48 @@ data class TagData(
     var discTotal: String = "",
     var comment: String = "",
     var isrc: String = "",
+    var lyrics: String = "",
     var mbRecordingId: String = "",
     var mbReleaseId: String = "",
     var cover: ByteArray? = null,
     var durationSec: Long = 0,
     /** Set when a release was expected to have cover art but the download failed. Not a tag field. */
-    var coverFetchFailed: Boolean = false
+    var coverFetchFailed: Boolean = false,
+    /**
+     * Set by sources that only know part of the tag (Audius has no album,
+     * NDL only knows the album). Applying merges over the current tag so
+     * fields the source does not know are kept, not cleared. Not a tag field.
+     */
+    var partial: Boolean = false
 ) {
     fun isBasicallyEmpty(): Boolean =
         title.isBlank() && artist.isBlank() && album.isBlank()
+
+    /** This tag's values, with every blank field filled in from [base]. */
+    fun mergedOver(base: TagData): TagData {
+        fun pick(a: String, b: String) = if (a.isNotBlank()) a else b
+        return TagData(
+            title = pick(title, base.title),
+            artist = pick(artist, base.artist),
+            album = pick(album, base.album),
+            albumArtist = pick(albumArtist, base.albumArtist),
+            composer = pick(composer, base.composer),
+            genre = pick(genre, base.genre),
+            year = pick(year, base.year),
+            track = pick(track, base.track),
+            trackTotal = pick(trackTotal, base.trackTotal),
+            disc = pick(disc, base.disc),
+            discTotal = pick(discTotal, base.discTotal),
+            comment = pick(comment, base.comment),
+            isrc = pick(isrc, base.isrc),
+            lyrics = pick(lyrics, base.lyrics),
+            mbRecordingId = pick(mbRecordingId, base.mbRecordingId),
+            mbReleaseId = pick(mbReleaseId, base.mbReleaseId),
+            cover = cover ?: base.cover,
+            durationSec = if (durationSec != 0L) durationSec else base.durationSec,
+            coverFetchFailed = coverFetchFailed
+        )
+    }
 }
 
 val AUDIO_EXTS = setOf("mp3", "flac", "m4a", "mp4", "ogg", "oga", "opus")

@@ -9,6 +9,8 @@ import android.widget.TextView
 import android.widget.Toast
 import com.yyoo.ototag.core.AnimeThemesClient
 import com.yyoo.ototag.core.AtSong
+import com.yyoo.ototag.core.AudiusClient
+import com.yyoo.ototag.core.AudiusTrack
 import com.yyoo.ototag.core.DeezerClient
 import com.yyoo.ototag.core.DeezerTrack
 import com.yyoo.ototag.core.ItunesClient
@@ -18,6 +20,8 @@ import com.yyoo.ototag.core.VgmdbTrack
 import com.yyoo.ototag.core.MbCandidate
 import com.yyoo.ototag.core.MbClient
 import com.yyoo.ototag.core.NameParser
+import com.yyoo.ototag.core.NdlClient
+import com.yyoo.ototag.core.NdlRecord
 import com.yyoo.ototag.core.ParsedName
 import com.yyoo.ototag.core.Strings
 import com.yyoo.ototag.core.TagData
@@ -158,13 +162,37 @@ object SearchFlow {
                     else VgmdbClient.search(q2)
                 }
             } catch (e: Exception) { emptyList() }
+            // Audius (indie catalog, no album info) as a sixth source; best effort only.
+            val audius = try {
+                if (!auto) AudiusClient.search(query)
+                else {
+                    val q1 = listOf(tag?.title, tag?.artist)
+                        .filter { !it.isNullOrBlank() }.joinToString(" ")
+                        .ifBlank { parsed?.title ?: "" }
+                    val q2 = parsed?.title ?: ""
+                    val first = if (q1.isNotBlank()) AudiusClient.search(q1) else emptyList()
+                    if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+                    else AudiusClient.search(q2)
+                }
+            } catch (e: Exception) { emptyList() }
+            // NDL Search (Japanese legal-deposit catalog, album-level); best effort.
+            val ndl = try {
+                if (!auto) NdlClient.search(query)
+                else {
+                    val q1 = tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title ?: ""
+                    val q2 = tag?.album?.takeIf { it.isNotBlank() } ?: parsed?.albumHint ?: ""
+                    val first = if (q1.isNotBlank()) NdlClient.search(q1) else emptyList()
+                    if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+                    else NdlClient.search(q2)
+                }
+            } catch (e: Exception) { emptyList() }
             if (stopped.get()) return@thread
             val cands = found.values.toList()
             activity.runOnUiThread {
                 if (stopped.get()) return@runOnUiThread
                 progress.dismiss()
                 if (cands.isEmpty() && atSongs.isEmpty() && itunes.isEmpty() &&
-                    deezer.isEmpty() && vgmdb.isEmpty()) {
+                    deezer.isEmpty() && vgmdb.isEmpty() && audius.isEmpty() && ndl.isEmpty()) {
                     if (mbError != null) {
                         Ui.failDialog(activity,
                             "${mbError.javaClass.simpleName}: ${mbError.message}")
@@ -173,7 +201,7 @@ object SearchFlow {
                         Toast.makeText(activity, Strings.t("no_results"), Toast.LENGTH_LONG).show()
                         onSkip?.invoke()
                     }
-                } else showChooser(activity, cands, atSongs, itunes, deezer, vgmdb, onSkip, bulk, onPicked)
+                } else showChooser(activity, cands, atSongs, itunes, deezer, vgmdb, audius, ndl, onSkip, bulk, onPicked)
             }
         }
     }
@@ -266,6 +294,8 @@ object SearchFlow {
         itunes: List<ItunesTrack>,
         deezer: List<DeezerTrack>,
         vgmdb: List<VgmdbTrack>,
+        audius: List<AudiusTrack>,
+        ndl: List<NdlRecord>,
         onSkip: (() -> Unit)?,
         bulk: Boolean,
         onPicked: (TagData) -> Unit
@@ -314,6 +344,19 @@ object SearchFlow {
             options.add(Opt(t.title, "${t.artist} — ${t.album}$yr · VGMdb",
                 t.coverThumbUrl.ifBlank { null }) {
                 VgmdbClient.buildTag(t)
+            })
+        }
+        for (t in audius) {
+            val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
+            options.add(Opt(t.title, "${t.artist}$yr · Audius",
+                t.coverThumbUrl.ifBlank { null }) {
+                AudiusClient.buildTag(t)
+            })
+        }
+        for (r in ndl) {
+            val yr = if (r.year.isNotBlank()) " (${r.year})" else ""
+            options.add(Opt(r.album, "${r.artist}$yr · NDL", null) {
+                NdlClient.buildTag(r)
             })
         }
         val d = { v: Int -> (v * activity.resources.displayMetrics.density).toInt() }

@@ -1,0 +1,104 @@
+<rss xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:openSearch="http://a9.com/-/spec/opensearchrss/1.0/" xmlns:dcndl="http://ndl.go.jp/dcndl/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" version="2.0">
+  <channel>
+    <title>炎 LiSA - 国立国会図書館サーチ OpenSearch</title>
+    <link>https://ios-v2-prod-eks-alb.ndlsearch.ndl.go.jp/api/opensearch?title=%E7%82%8E&amp;creator=LiSA&amp;cnt=10</link>
+    <description>Search results for title=炎 creator=LiSA cnt=10</description>
+    <language>ja</language>
+    <openSearch:totalResults>33</openSearch:totalResults>
+    <openSearch:startIndex>1</openSearch:startIndex>
+    <openSearch:itemsPerPage>10</openSearch:itemsPerPage>
+    <item>
+      <title>炎</title>
+      <link>https://ndlsearch.ndl.go.jp/books/R100000002-I030578413</link>
+      <description><![CDATA[<p>Sony Music Labels,2020,<p><ul><li>タイトル：炎</li><li>タイトル（読み）：ホムラ</li><li>責任表示：LiSA</li></ul>]]></description>
+      <author>LiSA</author>
+      <category>録音資料</category>
+      <category>記録メディア</category>
+      <guid isPermaLink="true">https://ndlsearch.ndl.go.jp/books/R100000002-I030578413</guid>
+      <pubDate>Sat, 9 Jan 2021 06:05:02 +0900</pubDate>
+      <dc:title>炎</dc:title>
+      <dcndl:titleTranscription>ホムラ</dcndl:titleTranscription>
+      <dc:publisher>Sony Music Labels</dc:publisher>
+      <dcndl:publicationPlace>JP</dcndl:publicationPlace>
+      <dc:date xsi:type="dcterms:W3CDTF">2020</dc:date>
+      <dcterms:issued>2020.10</dcterms:issued>
+      <dcndl:price>1600円</dcndl:price>
+      <dc:extent>録音ディスク 1枚</dc:extent>
+      <dc:identifier xsi:type="dcndl:RIS502">VVCL-1750</dc:identifier>
+      <dc:identifier xsi:type="dcndl:NDLBibID">030578413</dc:identifier>
+      <dc:identifier xsi:type="dcndl:JPNO">23450980</dc:identifier>
+      <dc:subject xsi:type="dcndl:NDLC">YMC11</dc:subject>
+      <dc:description>初回生産限定盤</dc:description>
+      <dc:description>付属資料: DVD 1枚 : 炎-MUSiC CLiP</dc:description>
+      <rdfs:seeAlso rdf:resource="https://ndlsearch.ndl.go.jp/books/R100000002-I030578413"/>
+      <dc:description> 2020</dc:description>
+    </item>
+<item>
+      <title>炎</title>
+      <link>https://ndlsearch.ndl.go.jp/books/R100000002-I030578415</link>
+      <description><![CDATA[<p>Sony Music Labels,2020,<p><ul><li>タイトル：炎</li><li>タイトル（読み）：ホムラ</li><li>責任表示：LiSA</li></ul>]]></description>
+      <author>LiSA</author>
+      <category>録音資料</category>
+      <category>記録メディア</category>
+      <guid isPermaLink="true">https://ndlsearch.ndl.go.jp/books/R100000002-I030578415</guid>
+      <pubDate>Thu, 19 Nov 2020 19:39:07 +0900</pubDate>
+      <dc:title>炎</dc:title>
+      <dcndl:titleTranscription>ホムラ</dcndl:titleTranscription>
+      <dc:publisher>Sony Music Labels</dc:publisher>
+      <dcndl:publicationPlace>JP</dcndl:publicationPlace>
+      <dc:date xsi:type="dcterms:W3CDTF">2020</dc:date>
+      <dcterms:issued>2020.10</dcterms:issued>
+      <dcndl:price>1300円</dcndl:price>
+      <dc:extent>録音ディスク 1枚</dc:extent>
+      <dc:identifier xsi:type="dcndl:RIS502">VVCL-1753</dc:identifier>
+      <dc:identifier xsi:type="dcndl:NDLBibID">030578415</dc:identifier>
+      <dc:identifier xsi:type="dcndl:JPNO">23450982</dc:identifier>
+      <dc:subject xsi:type="dcndl:NDLC">YMC11</dc:subject>
+      <dc:description>期間生産限定盤</dc:description>
+      <rdfs:seeAlso rdf:resource="https://ndlsearch.ndl.go.jp/books/R100000002-I030578415"/>
+      <dc:description> 2020</dc:description>
+    </item>
+<item>
+      <title>運命は炎のように</title>
+      <link>https://ndlsearch.ndl.go.jp/books/R100000002-I024665035</link>
+      <description><![CDATA[<p>二見書房,2013,978-4-576-13102-3<p><ul><li>タイトル：運命は炎のように</li><li>タイトル（読み）：ウンメイ ワ ホノオ ノ ヨウニ</li><li>責任表示：リサ・マリー・ライス 著,林啓恵 訳</li><li>シリーズ名：二見文庫 ; ラ11-5. ザ・ミステリ・コレクション</li><li>シリーズ名（読み）：フタミ ブンコ ; ラ-11-5. ザ ミステリ コレクション</li><li>NDC(9)：933.7</li></ul>]]></description>
+      <author>Rice, Lisa Marie,林, 啓恵, 1961-,リサ・マリー・ライス 著,林啓恵 訳</author>
+      <category>図書</category>
+      <category>紙</category>
+      <guid isPermaLink="true">https://ndlsearch.ndl.go.jp/books/R100000002-I024665035</guid>
+      <pubDate>Thu, 25 Jul 2013 22:15:27 +0900</pubDate>
+      <dc:title>運命は炎のように</dc:title>
+      <dcndl:titleTranscription>ウンメイ ワ ホノオ ノ ヨウニ</dcndl:titleTranscription>
+      <dc:creator>Rice, Lisa Marie</dc:creator>
+      <dc:creator>林, 啓恵, 1961-</dc:creator>
+      <dcndl:creatorTranscription>ハヤシ, ヒロエ, 1961-</dcndl:creatorTranscription>
+      <dcndl:seriesTitle>二見文庫 ; ラ11-5. ザ・ミステリ・コレクション</dcndl:seriesTitle>
+      <dcndl:seriesTitleTranscription>フタミ ブンコ ; ラ-11-5. ザ ミステリ コレクション</dcndl:seriesTitleTranscription>
+      <dc:publisher>二見書房</dc:publisher>
+      <dcndl:publicationPlace>JP</dcndl:publicationPlace>
+      <dc:date xsi:type="dcterms:W3CDTF">2013</dc:date>
+      <dcterms:issued>2013.8</dcterms:issued>
+      <dcndl:price>857円</dcndl:price>
+      <dc:extent>429p</dc:extent>
+      <dc:identifier xsi:type="dcndl:ISBN">978-4-576-13102-3</dc:identifier>
+      <dc:identifier xsi:type="dcndl:NDLBibID">024665035</dc:identifier>
+      <dc:identifier xsi:type="dcndl:JPNO">22275241</dc:identifier>
+      <dc:identifier xsi:type="dcndl:TOHANMARCNO">32954898</dc:identifier>
+      <dc:subject xsi:type="dcndl:NDLC">KS169</dc:subject>
+      <dc:subject xsi:type="dcndl:NDC9">933.7</dc:subject>
+      <dc:description>原タイトル: Hotter Than Wildfire</dc:description>
+      <rdfs:seeAlso rdf:resource="https://www.library.city.sapporo.jp/licsxp-opac/WOpacMsgNewListToTifTilDetailAction.do?tilcod=1008000692970"/>
+      <rdfs:seeAlso rdf:resource="https://www.lib.city.saitama.jp/bookdetail?num=355510&amp;ctg=1"/>
+      <rdfs:seeAlso rdf:resource="https://www.library.city.chiba.jp/licsxp-opac/WOpacTifSchCmpdDispAction.do"/>
+      <rdfs:seeAlso rdf:resource="https://opac.lib.city.yokohama.lg.jp/winj/opac/switch-detail-iccap.do?bibid=1113071565"/>
+      <rdfs:seeAlso rdf:resource="https://www.library.city.kawasaki.jp/bookdetail?num=2427378&amp;ctg=1"/>
+      <rdfs:seeAlso rdf:resource="https://www.toshokan.city.shizuoka.jp/licsxp-opac/WOpacMsgNewListToTifTilDetailAction.do?tilcod=1001103048828"/>
+      <rdfs:seeAlso rdf:resource="https://www.oml.city.osaka.lg.jp/licsxp-opac/WOpacMsgNewListToTifTilDetailAction.do?tilcod=1000012772342"/>
+      <rdfs:seeAlso rdf:resource="https://www.lib-sakai.jp/licsxp-opac/WOpacMsgNewListToTifTilDetailAction.do?tilcod=1007000326990"/>
+      <rdfs:seeAlso rdf:resource="http://www.library.city.hiroshima.jp/winj/opac/switch-detail-iccap.do?bibid=1103528361"/>
+      <rdfs:seeAlso rdf:resource="https://opac.miraionlibrary.jp/licsxp-opac/WOpacMsgNewListToTifTilDetailAction.do?tilcod=1000002174054"/>
+      <rdfs:seeAlso rdf:resource="https://ndlsearch.ndl.go.jp/books/R100000002-I024665035"/>
+      <rdfs:seeAlso rdf:resource="https://www.books.or.jp/book-details/9784576131023"/>
+      <dc:description> 2013</dc:description>
+    </item>
+</channel></rss>

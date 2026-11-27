@@ -18,6 +18,7 @@ class EditActivity : Activity() {
     private var coverRemoved = false
     private var player: MediaPlayer? = null
     private var playBtn: Button? = null
+    private var lyricsInput: EditText? = null
     private lateinit var coverView: ImageView
     private val inputs = HashMap<String, EditText>()
     private lateinit var filenameInput: EditText
@@ -75,6 +76,19 @@ class EditActivity : Activity() {
             setOnClickListener { coverBytes = null; coverRemoved = true; coverView.setImageBitmap(null) }
         })
         root.addView(coverBtns)
+
+        root.addView(TextView(this).apply { text = Strings.t("lyrics"); setTextColor(Ui.SUB) })
+        lyricsInput = EditText(this).apply {
+            minLines = 4
+            gravity = android.view.Gravity.TOP or android.view.Gravity.START
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+        }
+        root.addView(lyricsInput)
+        root.addView(Button(this).apply {
+            text = Strings.t("get_lyrics"); Ui.styleButton(this, Ui.TEAL)
+            setOnClickListener { fetchLyrics() }
+        })
 
         val btns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         playBtn = Button(this).apply {
@@ -145,25 +159,52 @@ class EditActivity : Activity() {
     }
 
     private fun fillFields(d: TagData) {
-        inputs["title"]?.setText(d.title)
-        inputs["artist"]?.setText(d.artist)
-        inputs["album"]?.setText(d.album)
-        inputs["album_artist"]?.setText(d.albumArtist)
-        inputs["composer"]?.setText(d.composer)
-        inputs["genre"]?.setText(d.genre)
-        inputs["year"]?.setText(d.year)
-        inputs["track"]?.setText(d.track)
-        inputs["track_total"]?.setText(d.trackTotal)
-        inputs["disc"]?.setText(d.disc)
-        inputs["disc_total"]?.setText(d.discTotal)
-        inputs["comment"]?.setText(d.comment)
-        inputs["isrc"]?.setText(d.isrc)
+        // Partial candidates (Audius / NDL) must not blank out fields they
+        // do not know; full candidates replace everything as before.
+        fun set(k: String, v: String) {
+            if (!d.partial || v.isNotBlank()) inputs[k]?.setText(v)
+        }
+        set("title", d.title)
+        set("artist", d.artist)
+        set("album", d.album)
+        set("album_artist", d.albumArtist)
+        set("composer", d.composer)
+        set("genre", d.genre)
+        set("year", d.year)
+        set("track", d.track)
+        set("track_total", d.trackTotal)
+        set("disc", d.disc)
+        set("disc_total", d.discTotal)
+        set("comment", d.comment)
+        set("isrc", d.isrc)
+        if (!d.partial || d.lyrics.isNotBlank()) lyricsInput?.setText(d.lyrics)
         if (d.cover != null) {
             coverBytes = d.cover; coverRemoved = false
             coverView.setImageBitmap(BitmapFactory.decodeByteArray(d.cover, 0, d.cover!!.size))
         }
         // keep MBIDs across a search-pick so they get written on save
-        pendingMbIds = d.mbRecordingId to d.mbReleaseId
+        if (!d.partial) pendingMbIds = d.mbRecordingId to d.mbReleaseId
+    }
+
+    /** Fetches lyrics from LRCLIB for the field values and fills the box. */
+    private fun fetchLyrics() {
+        val title = inputs["title"]?.text?.toString() ?: ""
+        val artist = inputs["artist"]?.text?.toString() ?: ""
+        val album = inputs["album"]?.text?.toString() ?: ""
+        val dur = item?.tag?.durationSec ?: 0
+        thread {
+            val entry = try {
+                LrclibClient.fetchBest(title, artist, album, dur)
+            } catch (e: Exception) { null }
+            runOnUiThread {
+                if (entry != null) {
+                    lyricsInput?.setText(entry.plainLyrics)
+                    Toast.makeText(this, Strings.t("done"), Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, Strings.t("no_lyrics"), Toast.LENGTH_LONG).show()
+                }
+            }
+        }
     }
 
     private var pendingMbIds: Pair<String, String> = "" to ""
@@ -175,7 +216,7 @@ class EditActivity : Activity() {
             albumArtist = v("album_artist"), composer = v("composer"), genre = v("genre"),
             year = v("year"), track = v("track"), trackTotal = v("track_total"),
             disc = v("disc"), discTotal = v("disc_total"), comment = v("comment"),
-            isrc = v("isrc"),
+            isrc = v("isrc"), lyrics = lyricsInput?.text?.toString() ?: "",
             mbRecordingId = pendingMbIds.first, mbReleaseId = pendingMbIds.second,
             cover = if (coverRemoved) null else coverBytes)
     }

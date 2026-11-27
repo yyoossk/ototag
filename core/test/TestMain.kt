@@ -88,6 +88,11 @@ fun main() {
             check("applied artist", back.artist.contains("米津玄師"), back.artist)
             check("applied mbid (UFID workaround)", back.mbRecordingId == lemon.recordingId, back.mbRecordingId)
             check("applied cover", back.cover != null && back.cover!!.size > 1000)
+            back.lyrics = "テスト歌詞です\n2行目です"
+            TagService.write(f, back)
+            val backL = TagService.read(f)
+            check("lyrics round-trip", backL.lyrics.contains("テスト歌詞です") &&
+                backL.lyrics.contains("2行目です"), backL.lyrics.take(30))
             val newName = Renamer.applyPattern("%track% - %title%", back, f.nameWithoutExtension)
             val renamed = Renamer.rename(f, newName)
             check("renamed", renamed != null && renamed.exists() && renamed.name.startsWith("0"), renamed?.name ?: "null")
@@ -220,6 +225,45 @@ fun main() {
     check("rename keeps filename track", nd.track == "08", nd.track)
     val rout = Renamer.applyPattern("%track% - %title%", nd, "x")
     check("rename pattern starts from name", rout.startsWith("08 - IN MY DREAM"), rout)
+
+    // --- Audius (recorded real response) ---
+    AudiusClient.fetcher = { url ->
+        if (url.contains("/v1/tracks/search")) File("testdata/audius-search.json").readBytes()
+        else byteArrayOf(9, 9, 9, 9, 9)
+    }
+    val au = AudiusClient.search("lemon")
+    val auT = au.firstOrNull()
+    check("audius results", au.isNotEmpty(), au.size.toString())
+    check("audius fields", auT?.title?.startsWith("Bitcoin Bully") == true &&
+        auT?.artist == "Block Bully 638" && auT?.genre == "Hip-Hop/Rap" &&
+        auT?.year == "2021" && auT?.coverThumbUrl?.contains("150x150") == true,
+        "${auT?.title} / ${auT?.artist}")
+    val auTag = auT?.let { AudiusClient.buildTag(it) }
+    check("audius partial tag", auTag?.partial == true && auTag?.album == "" &&
+        auTag?.cover?.size == 5, "")
+
+    // --- NDL Search (recorded real response, sound recordings only) ---
+    NdlClient.fetcher = { File("testdata/ndl-search.xml").readBytes() }
+    val ndl = NdlClient.search("炎 LiSA")
+    val ndlR = ndl.firstOrNull()
+    check("ndl results", ndl.isNotEmpty(), ndl.size.toString())
+    check("ndl fields", ndlR?.album == "炎" && ndlR?.artist == "LiSA" &&
+        ndlR?.year == "2020" && ndlR?.publisher == "Sony Music Labels",
+        "${ndlR?.album} / ${ndlR?.artist} / ${ndlR?.year}")
+    check("ndl partial tag", ndlR?.let { NdlClient.buildTag(it) }?.partial == true, "")
+
+    // --- partial merge keeps unknown fields ---
+    val merged = TagData(album = "新しいアルバム", partial = true)
+        .mergedOver(TagData(title = "曲名", album = "古いアルバム", track = "3"))
+    check("mergedOver", merged.title == "曲名" && merged.album == "新しいアルバム" &&
+        merged.track == "3" && !merged.partial, "")
+
+    // --- LRCLIB (recorded real response) ---
+    LrclibClient.fetcher = { File("testdata/lrclib-search.json").readBytes() }
+    val lrc = LrclibClient.fetchBest("Lemon", "米津玄師", "", 255)
+    check("lrclib best", lrc != null && lrc.plainLyrics.startsWith("夢ならば"),
+        lrc?.trackName ?: "null")
+    check("lrclib none", LrclibClient.search("", "", "").isEmpty(), "")
 
     println(if (failures == 0) "ALL PASS" else "FAILURES: $failures")
     kotlin.system.exitProcess(if (failures == 0) 0 else 1)

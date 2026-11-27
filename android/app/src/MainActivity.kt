@@ -394,7 +394,11 @@ class MainActivity : Activity() {
                     onSkip = { applyNext(sel, idx + 1) },
                     onStop = { adapter.notifyDataSetChanged() },
                     bulk = sel.size > 1
-                ) { newTag ->
+                ) { picked ->
+                    // Partial sources (Audius / NDL) only fill what they know;
+                    // keep the file's own values for everything else.
+                    val newTag = if (picked.partial)
+                        picked.mergedOver(item.tag ?: TagData()) else picked
                     thread {
                         var ok = false
                         try {

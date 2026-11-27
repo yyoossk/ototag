@@ -82,6 +82,7 @@ object TagService {
             d.disc = t.first(FieldKey.DISC_NO) ?: ""
             d.discTotal = t.first(FieldKey.DISC_TOTAL) ?: ""
             d.comment = t.first(FieldKey.COMMENT) ?: ""
+            d.lyrics = t.first(FieldKey.LYRICS) ?: ""
             d.isrc = t.first(FieldKey.ISRC) ?: ""
             d.mbRecordingId = t.first(FieldKey.MUSICBRAINZ_TRACK_ID) ?: ""
             d.mbReleaseId = t.first(FieldKey.MUSICBRAINZ_RELEASEID) ?: ""
@@ -122,6 +123,7 @@ object TagService {
         setOrRemove(t, FieldKey.DISC_NO, d.disc)
         setOrRemove(t, FieldKey.DISC_TOTAL, d.discTotal)
         setOrRemove(t, FieldKey.COMMENT, d.comment)
+        setOrRemove(t, FieldKey.LYRICS, d.lyrics)
         setOrRemove(t, FieldKey.ISRC, d.isrc)
         setOrRemove(t, FieldKey.MUSICBRAINZ_TRACK_ID, d.mbRecordingId)
         setOrRemove(t, FieldKey.MUSICBRAINZ_RELEASEID, d.mbReleaseId)
