@@ -203,12 +203,37 @@ fun searchAndPick(
                 else ItunesClient.search(q2)
             }
         } catch (e: Exception) { emptyList() }
+        // Deezer as a fourth source; best effort only.
+        val deezer = try {
+            if (!auto) DeezerClient.search(query)
+            else {
+                val q1 = listOfNotNull(
+                    tag?.title?.takeIf { it.isNotBlank() },
+                    tag?.artist?.takeIf { it.isNotBlank() }).joinToString(" ")
+                val q2 = listOfNotNull(parsed?.title, parsed?.artist).joinToString(" ")
+                val first = if (q1.isNotBlank()) DeezerClient.search(q1) else emptyList()
+                if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+                else DeezerClient.search(q2)
+            }
+        } catch (e: Exception) { emptyList() }
+        // VGMdb (game / anime soundtracks) as a fifth source; best effort only.
+        val vgmdb = try {
+            if (!auto) VgmdbClient.search(query)
+            else {
+                val q1 = tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title ?: ""
+                val q2 = tag?.album?.takeIf { it.isNotBlank() } ?: parsed?.albumHint ?: ""
+                val first = if (q1.isNotBlank()) VgmdbClient.search(q1) else emptyList()
+                if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+                else VgmdbClient.search(q2)
+            }
+        } catch (e: Exception) { emptyList() }
         if (stopped.get()) return@thread
         val cands = found.values.toList()
         SwingUtilities.invokeLater {
             progress?.dispose()
             if (stopped.get()) return@invokeLater
-            if (cands.isEmpty() && atSongs.isEmpty() && itunes.isEmpty()) {
+            if (cands.isEmpty() && atSongs.isEmpty() && itunes.isEmpty() &&
+                deezer.isEmpty() && vgmdb.isEmpty()) {
                 if (mbError != null) { fail("${mbError.javaClass.simpleName}: ${mbError.message}"); onStop?.invoke() }
                 else { info(Strings.t("no_results")); onSkip?.invoke() }
                 return@invokeLater
@@ -243,6 +268,17 @@ fun searchAndPick(
                 val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
                 options.add("<html><b>${esc(t.title)}</b><br><font color='#666666'>${esc(t.artist)} — ${esc(t.album)}$yr · iTunes</font></html>" to {
                     ItunesClient.buildTag(t)
+                })
+            }
+            for (t in deezer) {
+                options.add("<html><b>${esc(t.title)}</b><br><font color='#666666'>${esc(t.artist)} — ${esc(t.album)} · Deezer</font></html>" to {
+                    DeezerClient.buildTag(t)
+                })
+            }
+            for (t in vgmdb) {
+                val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
+                options.add("<html><b>${esc(t.title)}</b><br><font color='#666666'>${esc(t.artist)} — ${esc(t.album)}$yr · VGMdb</font></html>" to {
+                    VgmdbClient.buildTag(t)
                 })
             }
             val list = JList(options.map { it.first }.toTypedArray()).apply {

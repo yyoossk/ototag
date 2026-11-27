@@ -172,6 +172,46 @@ fun main() {
     val free = MbClient.searchFreeText("Lemon 米津玄師")
     check("free-text search", free.isNotEmpty(), free.size.toString())
 
+    // --- Deezer (real recorded search + cover; album fixture in documented shape) ---
+    DeezerClient.fetcher = { url ->
+        when {
+            url.contains("/album/") -> File("testdata/deezer-album.json").readBytes()
+            url.contains("api.deezer.com/search") -> File("testdata/deezer-search.json").readBytes()
+            url.contains("dzcdn.net") -> File("testdata/deezer-cover.jpg").readBytes()
+            else -> throw IllegalStateException("unexpected url $url")
+        }
+    }
+    val dz = DeezerClient.search("YOASOBI")
+    check("deezer count", dz.isNotEmpty(), dz.size.toString())
+    val dzT = dz.firstOrNull()
+    check("deezer fields", dzT?.title == "夜に駆ける" && dzT?.artist == "YOASOBI" &&
+        dzT?.album == "夜に駆ける" && dzT?.isrc == "JPP301900716" &&
+        dzT?.coverUrl?.contains("1000x1000") == true, dzT.toString())
+    val dzTag = DeezerClient.buildTag(dzT!!)
+    check("deezer tag + album details + cover", dzTag.title == "夜に駆ける" &&
+        dzTag.year == "2019" && dzTag.track == "1" && dzTag.trackTotal == "1" &&
+        dzTag.cover != null && dzTag.cover!!.size > 1000 && !dzTag.coverFetchFailed,
+        "year=${dzTag.year} track=${dzTag.track}/${dzTag.trackTotal} cover=${dzTag.cover?.size}")
+
+    // --- VGMdb (fixtures in the documented vgmdb.info shape) ---
+    VgmdbClient.fetcher = { url ->
+        when {
+            url.contains("/search") -> File("testdata/vgmdb-search.json").readBytes()
+            url.contains("/album/") -> File("testdata/vgmdb-album.json").readBytes()
+            url.contains("example.invalid") -> File("testdata/cover.jpg").readBytes()
+            else -> throw IllegalStateException("unexpected url $url")
+        }
+    }
+    val vg = VgmdbClient.search("sample")
+    check("vgmdb tracks", vg.size == 2, vg.size.toString())
+    val vgT = vg.firstOrNull()
+    check("vgmdb fields", vgT?.title == "サンプルの歌" && vgT?.artist == "サンプル歌手" &&
+        vgT?.album == "サンプル・サウンドトラック" && vgT?.year == "2023" &&
+        vgT?.track == "1" && vgT?.trackTotal == "2", vgT.toString())
+    val vgTag = VgmdbClient.buildTag(vgT!!)
+    check("vgmdb tag + cover", vgTag.title == "サンプルの歌" && vgTag.cover != null &&
+        vgTag.cover!!.size > 1000 && !vgTag.coverFetchFailed)
+
     println(if (failures == 0) "ALL PASS" else "FAILURES: $failures")
     kotlin.system.exitProcess(if (failures == 0) 0 else 1)
 }
