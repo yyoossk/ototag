@@ -967,6 +967,7 @@ class MainActivity : Activity() {
             .setNeutralButton(Strings.t("strip_num"), null)
             .setPositiveButton(Strings.t("apply")) { _, _ ->
                 var failed = 0
+                val failNotes = ArrayList<String>()
                 val targets = HashSet<String>()
                 for ((item, et) in fields) {
                     val newBase = Renamer.sanitize(et.text.toString())
@@ -977,11 +978,17 @@ class MainActivity : Activity() {
                         Items.list.any { it !== item && it.name.equals(newName, ignoreCase = true) }) {
                         failed++; continue
                     }
-                    if (!SafStore.rename(this, item, newName)) failed++
+                    if (!SafStore.rename(this, item, newName)) {
+                        failed++
+                        val d = SafStore.lastRenameDetail
+                        failNotes.add(if (d.isBlank()) item.name
+                            else "${item.name}\n$d")
+                    }
                     else item.checked = false // acted on: drop the check
                 }
                 adapter.notifyDataSetChanged()
-                toast(if (failed == 0) Strings.t("done") else "${Strings.t("failed")}: $failed")
+                if (failed == 0) toast(Strings.t("done"))
+                else Ui.failDialog(this, failNotes.joinToString("\n\n"))
             }
             .setNegativeButton(Strings.t("cancel"), null)
             .create()

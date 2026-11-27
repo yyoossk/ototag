@@ -301,44 +301,126 @@ object SafStore {
         } catch (e: Exception) { null }
     }
 
+    /** Diagnostic detail of the most recent failed rename. The rename
+     *  failure report shows it to the user, so the cause travels with
+     *  the report instead of needing another diagnostic round. */
+    var lastRenameDetail: String = ""
+
     fun rename(ctx: Context, item: Item, newName: String): Boolean {
+        val detail = StringBuilder()
+        var threw = false
         val newUri = try {
             DocumentsContract.renameDocument(ctx.contentResolver, item.docUri, newName)
-        } catch (e: Exception) { null }
+        } catch (e: Exception) {
+            threw = true
+            detail.append("renameDocument: ${e.javaClass.simpleName} ${e.message ?: ""}\n")
+            null
+        }
         if (newUri != null) {
             // Mutate in place: replacing the Item would orphan every other
             // reference (selection snapshots, the editor) and lose state
             // changes like unchecking.
             item.docUri = newUri
             item.name = newName
+            lastRenameDetail = ""
             return true
         }
+        if (!threw) detail.append("renameDocument: returned null\n")
         // Some providers rename the file and then return null or throw
         // anyway, so a failed call does not prove a failed rename (the
         // user saw "failed" for a rename that had in fact happened).
         // Check what is actually on disk before reporting failure.
         // (a) The document kept its id and now reports the new name.
+        var oldPresent = false
         try {
             ctx.contentResolver.query(item.docUri,
                 arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),
                 null, null, null)?.use { c ->
-                if (c.moveToFirst() && c.getString(0) == newName) {
-                    item.name = newName
-                    return true
-                }
-            }
-        } catch (e: Exception) { }
+                if (c.moveToFirst()) {
+                    val cur = c.getString(0)
+                    detail.append("old doc name now: $cur\n")
+                    if (cur == newName) {
+                        item.name = newName
+                        lastRenameDetail = ""
+                        return true
+                    }
+                    if (cur == item.name) oldPresent = true
+                } else detail.append("old doc query: empty\n")
+            } ?: detail.append("old doc query: no cursor\n")
+        } catch (e: Exception) {
+            detail.append("old doc query: ${e.javaClass.simpleName} ${e.message ?: ""}\n")
+        }
         // (b) The id is path-based and changed with the name: find the
         // renamed child in the parent folder and adopt its uri.
         val parent = item.parentUri
+        var newPresent = false
         if (parent != null) {
             val found = findChild(ctx, parent, newName)
             if (found != null) {
                 item.docUri = found
                 item.name = newName
+                lastRenameDetail = ""
                 return true
             }
+            if (findChild(ctx, parent, item.name) != null) oldPresent = true
+            detail.append("parent listing: new name absent, old name " +
+                (if (oldPresent) "present" else "absent") + "\n")
+        } else {
+            detail.append("parent: none (not a folder pick)\n")
         }
+        // Fallback: the rename plainly did not happen (the old file is
+        // still there under its old name and nothing carries the new
+        // name), so do it as copy + delete inside the same folder — the
+        // operations .lrc saving and file deletion already rely on.
+        if (parent != null && oldPresent && !newPresent) {
+            var created: Uri? = null
+            try {
+                val mime = try {
+                    ctx.contentResolver.query(item.docUri,
+                        arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE),
+                        null, null, null)?.use { c ->
+                            if (c.moveToFirst()) c.getString(0) else null
+                        }
+                } catch (e: Exception) { null } ?: "application/octet-stream"
+                created = DocumentsContract.createDocument(
+                    ctx.contentResolver, parent, mime, newName)
+                    ?: throw IllegalStateException("createDocument returned null")
+                var bytes = 0L
+                ctx.contentResolver.openInputStream(item.docUri)?.use { inp ->
+                    ctx.contentResolver.openOutputStream(created, "wt")?.use { out ->
+                        val buf = ByteArray(64 * 1024)
+                        while (true) {
+                            val n = inp.read(buf); if (n < 0) break
+                            out.write(buf, 0, n); bytes += n
+                        }
+                    } ?: throw IllegalStateException("cannot open the new file")
+                } ?: throw IllegalStateException("cannot open the file to copy")
+                val expected = try {
+                    ctx.contentResolver.query(item.docUri,
+                        arrayOf(DocumentsContract.Document.COLUMN_SIZE),
+                        null, null, null)?.use { c ->
+                            if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else -1L
+                        } ?: -1L
+                } catch (e: Exception) { -1L }
+                if (expected >= 0 && bytes != expected)
+                    throw IllegalStateException("copy size mismatch: $bytes of $expected")
+                if (!DocumentsContract.deleteDocument(ctx.contentResolver, item.docUri))
+                    throw IllegalStateException("copied, but deleting the old file failed")
+                item.docUri = created
+                item.name = newName
+                lastRenameDetail = ""
+                return true
+            } catch (e: Exception) {
+                detail.append("copy+delete: ${e.javaClass.simpleName} ${e.message ?: ""}\n")
+                // Do not leave a partial copy behind.
+                val c = created
+                if (c != null && item.docUri != c) {
+                    try { DocumentsContract.deleteDocument(ctx.contentResolver, c) }
+                    catch (e2: Exception) { }
+                }
+            }
+        }
+        lastRenameDetail = detail.toString().trim()
         return false
     }
 
