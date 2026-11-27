@@ -265,6 +265,22 @@ fun main() {
         lrc?.trackName ?: "null")
     check("lrclib none", LrclibClient.search("", "", "").isEmpty(), "")
 
+    // --- Musixmatch (documented response shape; live 401 shape for bad key) ---
+    MusixmatchClient.fetcher = { url ->
+        if (url.contains("apikey=BADKEY"))
+            """{"message":{"header":{"status_code":401,"execute_time":0.03},"body":[]}}"""
+                .toByteArray(Charsets.UTF_8)
+        else File("testdata/musixmatch-lyrics.json").readBytes()
+    }
+    MusixmatchClient.apiKey = ""
+    check("mxm needs key", MusixmatchClient.fetchLyrics("Lemon", "米津玄師") == null, "")
+    MusixmatchClient.apiKey = "TESTKEY"
+    val mxm = MusixmatchClient.fetchLyrics("Lemon", "米津玄師")
+    check("mxm lyrics", mxm != null && mxm.startsWith("夢ならば") &&
+        !mxm.contains("*******") && !mxm.contains("(1234567)"), mxm?.take(20) ?: "null")
+    MusixmatchClient.apiKey = "BADKEY"
+    check("mxm bad key", MusixmatchClient.fetchLyrics("Lemon", "米津玄師") == null, "")
+
     println(if (failures == 0) "ALL PASS" else "FAILURES: $failures")
     kotlin.system.exitProcess(if (failures == 0) 0 else 1)
 }

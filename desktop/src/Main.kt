@@ -496,6 +496,8 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
     private val lyricsArea = JTextArea(row.tag?.lyrics ?: "", 6, 34).apply {
         lineWrap = true; wrapStyleWord = true
     }
+    private val mxmKeyField = JTextField(
+        loadProps().getProperty("musixmatch_key") ?: "", 34)
     private var coverBytes: ByteArray? = row.tag?.cover
     private var coverRemoved = false
     private var mbIds = (row.tag?.mbRecordingId ?: "") to (row.tag?.mbReleaseId ?: "")
@@ -529,6 +531,8 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
         panel.add(JButton(Strings.t("get_lyrics")).apply {
             addActionListener { fetchLyrics() }
         }, gc); y++
+        gc.gridx = 0; gc.gridy = y; panel.add(JLabel(Strings.t("mxm_key")), gc)
+        gc.gridx = 1; panel.add(mxmKeyField, gc); y++
 
         gc.gridx = 0; gc.gridy = y; panel.add(JLabel(Strings.t("cover")), gc)
         gc.gridx = 1; panel.add(coverLabel, gc); y++
@@ -607,18 +611,30 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
         if (d.cover != null) setCover(d.cover!!)
     }
 
-    /** Fetches lyrics from LRCLIB for the field values and fills the area. */
+    /**
+     * Fetches lyrics for the field values and fills the area: LRCLIB first,
+     * then Musixmatch when the user has entered their (free) API key.
+     */
     private fun fetchLyrics() {
         val title = fields["title"]?.text ?: ""
         val artist = fields["artist"]?.text ?: ""
         val album = fields["album"]?.text ?: ""
         val dur = row.tag?.durationSec ?: 0
+        val key = mxmKeyField.text.trim()
+        saveProp("musixmatch_key", key)
         thread {
-            val entry = try {
-                LrclibClient.fetchBest(title, artist, album, dur)
+            var text: String? = try {
+                LrclibClient.fetchBest(title, artist, album, dur)?.plainLyrics
             } catch (e: Exception) { null }
+            if (text == null && key.isNotBlank()) {
+                text = try {
+                    MusixmatchClient.apiKey = key
+                    MusixmatchClient.fetchLyrics(title, artist)
+                } catch (e: Exception) { null }
+            }
+            val found = text
             SwingUtilities.invokeLater {
-                if (entry != null) lyricsArea.text = entry.plainLyrics
+                if (found != null) lyricsArea.text = found
                 else info(Strings.t("no_lyrics"))
             }
         }

@@ -19,6 +19,7 @@ class EditActivity : Activity() {
     private var player: MediaPlayer? = null
     private var playBtn: Button? = null
     private var lyricsInput: EditText? = null
+    private var mxmKeyInput: EditText? = null
     private lateinit var coverView: ImageView
     private val inputs = HashMap<String, EditText>()
     private lateinit var filenameInput: EditText
@@ -89,6 +90,14 @@ class EditActivity : Activity() {
             text = Strings.t("get_lyrics"); Ui.styleButton(this, Ui.TEAL)
             setOnClickListener { fetchLyrics() }
         })
+        root.addView(TextView(this).apply { text = Strings.t("mxm_key"); setTextColor(Ui.SUB) })
+        mxmKeyInput = EditText(this).apply {
+            setText(getSharedPreferences("ototag", MODE_PRIVATE)
+                .getString("mxm_key", "") ?: "")
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+        }
+        root.addView(mxmKeyInput)
 
         val btns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         playBtn = Button(this).apply {
@@ -186,19 +195,32 @@ class EditActivity : Activity() {
         if (!d.partial) pendingMbIds = d.mbRecordingId to d.mbReleaseId
     }
 
-    /** Fetches lyrics from LRCLIB for the field values and fills the box. */
+    /**
+     * Fetches lyrics for the field values and fills the box: LRCLIB first,
+     * then Musixmatch when the user has entered their (free) API key.
+     */
     private fun fetchLyrics() {
         val title = inputs["title"]?.text?.toString() ?: ""
         val artist = inputs["artist"]?.text?.toString() ?: ""
         val album = inputs["album"]?.text?.toString() ?: ""
         val dur = item?.tag?.durationSec ?: 0
+        val key = mxmKeyInput?.text?.toString()?.trim() ?: ""
+        getSharedPreferences("ototag", MODE_PRIVATE).edit()
+            .putString("mxm_key", key).apply()
         thread {
-            val entry = try {
-                LrclibClient.fetchBest(title, artist, album, dur)
+            var text: String? = try {
+                LrclibClient.fetchBest(title, artist, album, dur)?.plainLyrics
             } catch (e: Exception) { null }
+            if (text == null && key.isNotBlank()) {
+                text = try {
+                    MusixmatchClient.apiKey = key
+                    MusixmatchClient.fetchLyrics(title, artist)
+                } catch (e: Exception) { null }
+            }
+            val found = text
             runOnUiThread {
-                if (entry != null) {
-                    lyricsInput?.setText(entry.plainLyrics)
+                if (found != null) {
+                    lyricsInput?.setText(found)
                     Toast.makeText(this, Strings.t("done"), Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(this, Strings.t("no_lyrics"), Toast.LENGTH_LONG).show()
