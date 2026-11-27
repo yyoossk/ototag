@@ -23,6 +23,9 @@ data class TagData(
     var durationSec: Long = 0,
     /** Set when a release was expected to have cover art but the download failed. Not a tag field. */
     var coverFetchFailed: Boolean = false,
+    /** Pixel size of [cover] when known (from the image header). Not a tag field. */
+    var coverW: Int = 0,
+    var coverH: Int = 0,
     /**
      * Set by sources that only know part of the tag (Audius has no album,
      * NDL only knows the album). Applying merges over the current tag so
@@ -65,6 +68,8 @@ data class TagData(
             mbRecordingId = pick(mbRecordingId, base.mbRecordingId),
             mbReleaseId = pick(mbReleaseId, base.mbReleaseId),
             cover = cover ?: base.cover,
+            coverW = if (cover != null) coverW else base.coverW,
+            coverH = if (cover != null) coverH else base.coverH,
             durationSec = if (durationSec != 0L) durationSec else base.durationSec,
             coverFetchFailed = coverFetchFailed
         )

@@ -17,6 +17,11 @@ import kotlin.concurrent.thread
 /** Dark palette switch (settings prop "dark"; applies from startup). */
 var darkMode = false
 
+/** Fully transparent icon for folder header rows. */
+val emptyIcon: ImageIcon by lazy {
+    ImageIcon(java.awt.image.BufferedImage(40, 40, java.awt.image.BufferedImage.TYPE_INT_ARGB))
+}
+
 /** "No image" placeholder icon for rows without cover art. */
 val noCoverIcon: ImageIcon by lazy {
     val img = java.awt.image.BufferedImage(40, 40, java.awt.image.BufferedImage.TYPE_INT_RGB)
@@ -32,6 +37,12 @@ val noCoverIcon: ImageIcon by lazy {
 }
 
 class Row(val file: File) {
+    /** Display name of the containing folder (for the grouped list). */
+    val folder: String get() = file.parentFile?.name ?: ""
+    /** A sibling "<name>.lrc" file exists next to this song. */
+    val hasLrc: Boolean by lazy {
+        File(file.parentFile, file.nameWithoutExtension + ".lrc").isFile
+    }
     var checked = false
     var tag: TagData? = null
     var status: String = ""
@@ -68,25 +79,40 @@ class Row(val file: File) {
 
     companion object {
         /**
-         * Bounds how many decoded list icons stay in memory: beyond the
-         * cap, the least recently shown ones are dropped (they decode
-         * again when scrolled back to).
+         * Bounds how many decoded list icons stay in memory. The cap
+         * follows the heap the JVM may use, and beyond it the icons of
+         * the rows farthest from the visible window are dropped first
+         * (they decode again when scrolled back to).
          */
-        private const val ICON_CAP = 48
-        private val iconLru = object : LinkedHashMap<Row, Unit>(64, 0.75f, true) {
-            override fun removeEldestEntry(
-                eldest: MutableMap.MutableEntry<Row, Unit>
-            ): Boolean {
-                if (size > ICON_CAP) {
-                    eldest.key.icon = null
-                    eldest.key.iconFor = 0
-                    return true
+        private val ICON_CAP: Int =
+            when {
+                Runtime.getRuntime().maxMemory() >= 512L * 1024 * 1024 -> 64
+                Runtime.getRuntime().maxMemory() >= 256L * 1024 * 1024 -> 48
+                else -> 32
+            }
+        private val iconLru = LinkedHashMap<Row, Unit>(64)
+
+        @Synchronized fun touchIcon(row: Row) {
+            iconLru.remove(row); iconLru[row] = Unit
+            if (iconLru.size <= ICON_CAP) return
+            val order = shownRows()
+            val pos = HashMap<Row, Int>(order.size)
+            order.forEachIndexed { i, r -> pos[r] = i }
+            while (iconLru.size > ICON_CAP) {
+                var victim: Row? = null
+                var victimDist = -1
+                for (k in iconLru.keys) {
+                    if (k === row) continue
+                    val idx = pos[k]
+                    val dist = if (idx == null) Int.MAX_VALUE
+                        else kotlin.math.abs(idx - visibleCenterRow)
+                    if (dist > victimDist) { victimDist = dist; victim = k }
                 }
-                return false
+                val v = victim ?: break
+                iconLru.remove(v)
+                v.icon = null; v.iconFor = 0
             }
         }
-
-        @Synchronized fun touchIcon(row: Row) { iconLru[row] = Unit }
     }
 
     private fun decodeIcon(cover: ByteArray): ImageIcon? = try {
@@ -128,8 +154,37 @@ var filterMode = 0
 /** List sort: 0 = file name, 1 = title, 2 = album, 3 = artist. */
 var sortMode = 0
 
+/** Sort direction flip (the ↑↓ button next to the sort box). */
+var sortReverse = false
+
+/** Quick filter set by clicking an artist/album cell; null = off. */
+var quickFilter: String? = null
+lateinit var quickBar: JLabel
+
+/** Centre of the visible table window, for icon eviction. */
+@Volatile var visibleCenterRow: Int = 0
+
+/** Bumped by refresh(); keys the shown/display list caches. */
+private var listVersion = 0
+private var shownCache: List<Row>? = null
+private var shownCacheKey = ""
+private var displayCache: List<Any>? = null
+private var displayCacheKey = ""
+
+/** Folders currently collapsed in the grouped list. */
+val collapsedFolders = HashSet<String>()
+
+/** One display row: either a folder header (String) or a song (Row). */
+
+/**
+ * The rows the table shows, after the filter and sort. Memoized: the
+ * table model asks constantly while painting, and the filter/sort only
+ * runs again when an input actually changed.
+ */
 fun shownRows(): List<Row> {
-    val filtered = when (filterMode) {
+    val key = "$filterMode|$sortMode|$sortReverse|$quickFilter|$listVersion|${rows.size}"
+    shownCache?.let { if (shownCacheKey == key) return it }
+    var filtered = when (filterMode) {
         1 -> rows.filter { it.tag == null || it.tag!!.isBasicallyEmpty() }
         2 -> rows.filter { !it.hasCover }
         3 -> rows.filter { it.failed }
@@ -139,13 +194,44 @@ fun shownRows(): List<Row> {
         7 -> rows.filter { it.tag?.lyrics.isNullOrBlank() }
         else -> rows
     }
-    return when (sortMode) {
+    quickFilter?.let { q ->
+        filtered = filtered.filter { it.tag?.artist == q || it.tag?.album == q }
+    }
+    val sorted = when (sortMode) {
         1 -> filtered.sortedBy { (it.tag?.title?.ifBlank { null } ?: it.file.name).lowercase() }
         2 -> filtered.sortedBy { (it.tag?.album?.ifBlank { null } ?: it.file.name).lowercase() }
         3 -> filtered.sortedBy { (it.tag?.artist?.ifBlank { null } ?: it.file.name).lowercase() }
         4 -> filtered.sortedByDescending { it.file.lastModified() }
         else -> filtered.sortedBy { it.file.name.lowercase() }
     }
+    val result = if (sortReverse) sorted.reversed() else sorted
+    shownCache = result; shownCacheKey = key
+    displayCache = null
+    return result
+}
+
+/**
+ * Display rows for the table model: when the songs come from more than
+ * one folder, folder headers are interleaved (click to collapse).
+ */
+fun displayRows(): List<Any> {
+    val dkey = shownCacheKey + "|" + collapsedFolders.hashCode()
+    displayCache?.let { if (displayCacheKey == dkey) return it }
+    val shown = shownRows()
+    val folders = shown.map { it.folder }.distinct()
+    val out: List<Any> = if (folders.size <= 1) shown
+    else {
+        val byFolder = LinkedHashMap<String, MutableList<Row>>()
+        for (r in shown) byFolder.getOrPut(r.folder) { ArrayList() }.add(r)
+        val list = ArrayList<Any>()
+        for ((folder, items) in byFolder) {
+            list.add(folder as Any)
+            if (folder !in collapsedFolders) list.addAll(items)
+        }
+        list
+    }
+    displayCache = out; displayCacheKey = dkey
+    return out
 }
 
 /** The embedded-cover size cap from the settings (0 = no limit, the default). */
@@ -200,7 +286,7 @@ lateinit var table: JTable
 lateinit var model: RowModel
 
 class RowModel : AbstractTableModel() {
-    override fun getRowCount() = shownRows().size
+    override fun getRowCount() = displayRows().size
     override fun getColumnCount() = 7
     override fun getColumnName(c: Int) = when (c) {
         2 -> Strings.t("filename"); 3 -> Strings.t("title"); 4 -> Strings.t("artist")
@@ -211,41 +297,102 @@ class RowModel : AbstractTableModel() {
         1 -> ImageIcon::class.java
         else -> String::class.java
     }
-    override fun isCellEditable(r: Int, c: Int) = c == 0
-    override fun getValueAt(r: Int, c: Int): Any = when (c) {
-        0 -> shownRows()[r].checked
-        1 -> shownRows()[r].coverIcon() ?: noCoverIcon
-        2 -> shownRows()[r].file.name
-        3 -> shownRows()[r].tag?.title ?: ""
-        4 -> shownRows()[r].tag?.artist ?: ""
-        5 -> shownRows()[r].tag?.album ?: ""
-        else -> shownRows()[r].status
+    override fun isCellEditable(r: Int, c: Int) =
+        c == 0 && displayRows()[r] is Row
+    override fun getValueAt(r: Int, c: Int): Any {
+        val disp = displayRows()[r]
+        if (disp is String) {
+            // Folder header row.
+            val count = shownRows().count { it.folder == disp }
+            val arrow = if (disp in collapsedFolders) "\u25B8" else "\u25BE"
+            return when (c) {
+                0 -> false
+                1 -> emptyIcon
+                2 -> "$arrow ${disp.ifBlank { "/" }} ($count)"
+                else -> ""
+            }
+        }
+        val row = disp as Row
+        return when (c) {
+            0 -> row.checked
+            1 -> row.coverIcon() ?: noCoverIcon
+            2 -> row.file.name + badgesOf(row)
+            3 -> row.tag?.title ?: ""
+            4 -> row.tag?.artist ?: ""
+            5 -> row.tag?.album ?: ""
+            else -> row.status
+        }
     }
     override fun setValueAt(v: Any?, r: Int, c: Int) {
-        if (c == 0) { shownRows()[r].checked = v as Boolean; fireTableCellUpdated(r, c) }
+        val disp = displayRows()[r]
+        if (c == 0 && disp is Row) { disp.checked = v as Boolean; fireTableCellUpdated(r, c) }
     }
 }
 
-fun refresh() { SwingUtilities.invokeLater { model.fireTableDataChanged() } }
+/** Row badges: [LRC] for a sidecar lyrics file, \u25AD for a non-square cover. */
+fun badgesOf(row: Row): String {
+    val sb = StringBuilder()
+    if (row.hasLrc) sb.append(" [LRC]")
+    val t = row.tag
+    if (row.hasCover && t != null && t.coverW > 0 && t.coverW != t.coverH) sb.append(" \u25AD")
+    return sb.toString()
+}
+
+fun refresh() {
+    listVersion++
+    SwingUtilities.invokeLater { model.fireTableDataChanged() }
+}
+
+/** Shows or hides the quick-filter bar to match [quickFilter]. */
+fun updateQuickBar() {
+    if (!::quickBar.isInitialized) return
+    val q = quickFilter
+    if (q == null) quickBar.isVisible = false
+    else { quickBar.text = "\u00BB $q \u2715"; quickBar.isVisible = true }
+    quickBar.parent?.revalidate()
+}
 
 fun addFiles(files: List<File>, startChecked: Boolean = false) {
     thread {
+        val includeSubs = loadProps().getProperty("subfolders")
+            ?.toBooleanStrictOrNull() ?: true
         val found = mutableListOf<File>()
-        for (f in files) collectAudio(f, found)
-        var primed = 0
-        for (f in found.sortedBy { it.name.lowercase() }) {
-            if (rows.any { it.file.absolutePath == f.absolutePath }) continue
-            // Files added one by one start out checked; folder loads do not.
-            val row = Row(f).apply { checked = startChecked }
-            try {
-                val full = TagService.read(f)
-                row.setTagLight(full)
-                // Prime only the first screenful of icons; the rest
-                // decode on demand when their row scrolls into view.
-                if (full.cover != null && primed < 24) { row.primeIcon(full.cover!!); primed++ }
-            } catch (e: Exception) { row.status = e.message ?: ""; row.failed = true }
-            rows.add(row)
+        for (f in files) {
+            if (f.isDirectory && !includeSubs) {
+                // Direct children only; non-audio names are dropped by
+                // the extension check before any file work happens.
+                f.listFiles()?.forEach { if (it.isAudio()) found.add(it) }
+            } else collectAudio(f, found)
         }
+        val sorted = found.sortedBy { it.name.lowercase() }
+        val primed = java.util.concurrent.atomic.AtomicInteger(0)
+        val next = java.util.concurrent.atomic.AtomicInteger(0)
+        // The reader pool follows the folder size, like the Android list.
+        val nWorkers = when { sorted.size < 20 -> 2; sorted.size <= 100 -> 4; else -> 6 }
+        val workers = (1..nWorkers).map {
+            thread {
+                while (true) {
+                    val i = next.getAndIncrement()
+                    if (i >= sorted.size) break
+                    val f = sorted[i]
+                    synchronized(rows) {
+                        if (rows.any { it.file.absolutePath == f.absolutePath }) continue
+                    }
+                    // Files added one by one start out checked; folder loads do not.
+                    val row = Row(f).apply { checked = startChecked }
+                    try {
+                        val full = TagService.read(f)
+                        row.setTagLight(full)
+                        // Prime only the first screenful of icons; the
+                        // rest decode on demand when scrolled into view.
+                        if (full.cover != null && primed.getAndIncrement() < 24)
+                            row.primeIcon(full.cover!!)
+                    } catch (e: Exception) { row.status = e.message ?: ""; row.failed = true }
+                    synchronized(rows) { rows.add(row) }
+                }
+            }
+        }
+        workers.forEach { it.join() }
         refresh()
     }
 }
@@ -265,31 +412,62 @@ fun rememberDir(dir: File) {
     saveProp("recent_dirs", (listOf(dir.absolutePath) + rest).take(5).joinToString("\n"))
 }
 
-/** Folder button: offer the recent folders first when there are any. */
+/** Folders pinned by the user (absolute paths), kept apart from the history. */
+fun pinnedDirs(): List<String> =
+    (loadProps().getProperty("pinned_dirs") ?: "").split("\n").filter { it.isNotBlank() }
+
+/** Pin/unpin dialog over the known folders (pinned + recent). */
+fun showPinToggle() {
+    val known = (pinnedDirs() + recentDirs()).distinct()
+        .map { File(it) }.filter { it.isDirectory }
+    if (known.isEmpty()) return
+    val pinned = pinnedDirs().toMutableSet()
+    val checks = known.map { dir ->
+        JCheckBox(dir.absolutePath, dir.absolutePath in pinned)
+    }
+    val panel = JPanel(GridLayout(checks.size, 1))
+    checks.forEach { panel.add(it) }
+    val res = JOptionPane.showConfirmDialog(frame, panel, Strings.t("pinned_folders"),
+        JOptionPane.OK_CANCEL_OPTION)
+    if (res == JOptionPane.OK_OPTION) {
+        val now = known.filterIndexed { i, _ -> checks[i].isSelected }
+            .map { it.absolutePath }
+        saveProp("pinned_dirs", now.joinToString("\n"))
+    }
+}
+
+fun openFolder(dir: File) {
+    // A different folder: the search session cache belongs to the old one.
+    SearchCache.clear()
+    collapsedFolders.clear()
+    rememberDir(dir)
+    addFiles(listOf(dir))
+}
+
+/** Folder button: pinned folders first, then the recent ones. */
 fun pickFolderOrHistory() {
+    val pinned = pinnedDirs().map { File(it) }.filter { it.isDirectory }
     val recent = recentDirs().map { File(it) }.filter { it.isDirectory }
-    if (recent.isEmpty()) {
+        .filter { it.absolutePath !in pinnedDirs() }
+    if (pinned.isEmpty() && recent.isEmpty()) {
         val fc = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
-        if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
-            rememberDir(fc.selectedFile)
-            addFiles(listOf(fc.selectedFile))
-        }
+        if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) openFolder(fc.selectedFile)
         return
     }
-    val labels = recent.map { it.absolutePath } + Strings.t("pick_new_folder")
+    val all = pinned + recent
+    val labels = all.mapIndexed { i, dir ->
+        (if (i < pinned.size) "\u2605 " else "") + dir.absolutePath
+    } + listOf(Strings.t("pick_new_folder"), Strings.t("pin_folder"))
     val pick = JOptionPane.showInputDialog(frame, Strings.t("recent_folders"),
         Strings.t("choose_folder"), JOptionPane.PLAIN_MESSAGE, null,
         labels.toTypedArray(), labels[0]) as? String ?: return
-    if (pick == Strings.t("pick_new_folder")) {
-        val fc = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
-        if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
-            rememberDir(fc.selectedFile)
-            addFiles(listOf(fc.selectedFile))
+    when {
+        pick == Strings.t("pick_new_folder") -> {
+            val fc = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
+            if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) openFolder(fc.selectedFile)
         }
-    } else {
-        val dir = File(pick)
-        rememberDir(dir)
-        addFiles(listOf(dir))
+        pick == Strings.t("pin_folder") -> showPinToggle()
+        else -> openFolder(File(pick.removePrefix("\u2605 ")))
     }
 }
 
@@ -353,22 +531,56 @@ fun searchAndPick(
     onPicked: (TagData) -> Unit
 ) {
     // The user can type / edit the search words before the search runs.
-    val autoQuery = listOfNotNull(
+    val autoQuery = SearchText.normalizeQuery(listOfNotNull(
         tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title,
         tag?.artist?.takeIf { it.isNotBlank() } ?: parsed?.artist
-    ).joinToString(" ").trim()
+    ).joinToString(" "))
     val query: String
     val auto: Boolean
+    var detail: Pair<String, String>? = null
     if (presetQuery != null) {
         // A narrowed re-search (title only / artist only): no prompt.
-        query = presetQuery
+        query = SearchText.normalizeQuery(presetQuery)
         auto = false
     } else {
-        val typed = JOptionPane.showInputDialog(frame, Strings.t("enter_query"), autoQuery)
-        if (typed == null || typed.isBlank()) { onStop?.invoke(); return }
-        query = typed.trim()
-        auto = query == autoQuery
+        val qField = JTextField(autoQuery, 34)
+        val dTitle = JTextField(34).apply { isEnabled = false }
+        val dArtist = JTextField(34).apply { isEnabled = false }
+        val dBox = JCheckBox(Strings.t("detailed_search")).apply {
+            addActionListener {
+                dTitle.isEnabled = isSelected; dArtist.isEnabled = isSelected
+            }
+        }
+        val panel = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            add(qField); add(dBox)
+            add(JPanel(BorderLayout(6, 0)).apply {
+                add(JLabel(Strings.t("title")), BorderLayout.WEST); add(dTitle, BorderLayout.CENTER)
+            })
+            add(JPanel(BorderLayout(6, 0)).apply {
+                add(JLabel(Strings.t("artist")), BorderLayout.WEST); add(dArtist, BorderLayout.CENTER)
+            })
+        }
+        val res = JOptionPane.showConfirmDialog(frame, panel, Strings.t("enter_query"),
+            JOptionPane.OK_CANCEL_OPTION)
+        if (res != JOptionPane.OK_OPTION) { onStop?.invoke(); return }
+        if (dBox.isSelected) {
+            val dt = SearchText.normalizeQuery(dTitle.text)
+            val da = SearchText.normalizeQuery(dArtist.text)
+            if (dt.isBlank() && da.isBlank()) { onStop?.invoke(); return }
+            detail = dt to da
+            query = listOf(dt, da).filter { it.isNotBlank() }.joinToString(" ")
+            auto = false
+        } else {
+            // Width/case differences in the typed words are folded away.
+            val typed = SearchText.normalizeQuery(qField.text)
+            if (typed.isBlank()) { onStop?.invoke(); return }
+            query = typed
+            auto = query == autoQuery
+        }
     }
+    val trackKey = localFile?.name
+        ?: ((tag?.title ?: parsed?.title ?: "") + "|" + (tag?.artist ?: parsed?.artist ?: ""))
     val stopped = java.util.concurrent.atomic.AtomicBoolean(false)
     var progress: JDialog? = null // only touched on the EDT (creation and disposal are both invokeLater)
     SwingUtilities.invokeLater {
@@ -376,7 +588,8 @@ fun searchAndPick(
             stopped.set(true); onStop?.invoke()
         }.also { it.isVisible = true }
     }
-    class DlgOpt(val title: String, val sub: String, val iconUrl: String?, val build: () -> TagData)
+    class DlgOpt(val title: String, var sub: String, val iconUrl: String?,
+                 val key: String, val build: () -> TagData)
     fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     /** Builds the chooser rows for whichever sources are passed in. */
     fun buildOpts(
@@ -389,28 +602,28 @@ fun searchAndPick(
         // Fingerprint matches first: they identify this exact recording.
         for (c in fp) {
             if (c.releases.isEmpty()) {
-                options.add(DlgOpt(c.title, "${c.artist} · AcoustID", null) {
+                options.add(DlgOpt(c.title, "${c.artist} · AcoustID", null, "fp|${c.recordingId}|") {
                     TagData(title = c.title, artist = c.artist, mbRecordingId = c.recordingId)
                 })
             }
             for (r in c.releases) {
                 val meta = listOf(r.date.take(4), r.country).filter { it.isNotBlank() }.joinToString(", ")
                 options.add(DlgOpt(c.title, "${c.artist} — ${r.title} ($meta) · AcoustID",
-                    MbClient.coverUrl(r.id).replace("front-250", "front-120")) {
+                    MbClient.coverUrl(r.id).replace("front-250", "front-120"), "fp|${c.recordingId}|${r.id}") {
                     MbClient.buildTag(c, r)
                 })
             }
         }
         for (c in mb) {
             if (c.releases.isEmpty()) {
-                options.add(DlgOpt(c.title, c.artist, null) {
+                options.add(DlgOpt(c.title, c.artist, null, "mb|${c.recordingId}|") {
                     TagData(title = c.title, artist = c.artist, mbRecordingId = c.recordingId)
                 })
             }
             for (r in c.releases) {
                 val meta = listOf(r.date.take(4), r.country).filter { it.isNotBlank() }.joinToString(", ")
                 options.add(DlgOpt(c.title, "${c.artist} — ${r.title} ($meta)",
-                    MbClient.coverUrl(r.id).replace("front-250", "front-120")) {
+                    MbClient.coverUrl(r.id).replace("front-250", "front-120"), "mb|${c.recordingId}|${r.id}") {
                     MbClient.buildTag(c, r)
                 })
             }
@@ -422,40 +635,40 @@ fun searchAndPick(
                 else -> " — ${s.anime}"
             }
             val labelPart = if (s.themeLabel.isNotBlank()) " · ${s.themeLabel}" else ""
-            options.add(DlgOpt(s.title, "${s.artist}$animePart$labelPart · AnimeThemes", null) {
+            options.add(DlgOpt(s.title, "${s.artist}$animePart$labelPart · AnimeThemes", null, "at|${s.title}|${s.artist}|${s.anime}") {
                 s.toTag()
             })
         }
         for (t in itunes) {
             val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
             options.add(DlgOpt(t.title, "${t.artist} — ${t.album}$yr · iTunes",
-                t.artworkUrl.ifBlank { null }?.replace("600x600bb.jpg", "100x100bb.jpg")) {
+                t.artworkUrl.ifBlank { null }?.replace("600x600bb.jpg", "100x100bb.jpg"), "itunes|${t.title}|${t.artist}|${t.album}") {
                 ItunesClient.buildTag(t)
             })
         }
         for (t in deezer) {
             options.add(DlgOpt(t.title, "${t.artist} — ${t.album} · Deezer",
-                t.coverUrl.ifBlank { null }?.replace("1000x1000", "150x150")) {
+                t.coverUrl.ifBlank { null }?.replace("1000x1000", "150x150"), "deezer|${t.title}|${t.artist}|${t.album}") {
                 DeezerClient.buildTag(t)
             })
         }
         for (t in vgmdb) {
             val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
             options.add(DlgOpt(t.title, "${t.artist} — ${t.album}$yr · VGMdb",
-                t.coverThumbUrl.ifBlank { null }) {
+                t.coverThumbUrl.ifBlank { null }, "vgmdb|${t.title}|${t.artist}|${t.album}") {
                 VgmdbClient.buildTag(t)
             })
         }
         for (t in audius) {
             val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
             options.add(DlgOpt(t.title, "${t.artist}$yr · Audius",
-                t.coverThumbUrl.ifBlank { null }) {
+                t.coverThumbUrl.ifBlank { null }, "audius|${t.title}|${t.artist}") {
                 AudiusClient.buildTag(t)
             })
         }
         for (r in ndl) {
             val yr = if (r.year.isNotBlank()) " (${r.year})" else ""
-            options.add(DlgOpt(r.album, "${r.artist}$yr · NDL", null) {
+            options.add(DlgOpt(r.album, "${r.artist}$yr · NDL", null, "ndl|${r.album}|${r.artist}") {
                 NdlClient.buildTag(r)
             })
         }
@@ -464,6 +677,20 @@ fun searchAndPick(
     var chooserAppend: ((List<DlgOpt>) -> Unit)? = null
     /** Opens the candidate chooser; later sources append via chooserAppend. */
     fun openChooser(initial: MutableList<DlgOpt>) {
+        // A candidate chosen for this same file before is offered first.
+        if (trackKey.isNotBlank()) {
+            val remembered = (loadProps().getProperty("cand_memory") ?: "")
+                .split("\n").firstOrNull { it.startsWith(trackKey + "\t") }
+                ?.substringAfter("\t")
+            if (remembered != null) {
+                val idx = initial.indexOfFirst { it.key == remembered }
+                if (idx >= 0) {
+                    val o = initial.removeAt(idx)
+                    o.sub = o.sub + " · " + Strings.t("prev_choice")
+                    initial.add(0, o)
+                }
+            }
+        }
         val model = javax.swing.DefaultListModel<DlgOpt>()
         initial.forEach { model.addElement(it) }
         SwingUtilities.invokeLater {
@@ -502,9 +729,12 @@ fun searchAndPick(
                             if (ic != null) icon = ic else loadIcon(u)
                         }
                     }
+                    // Candidates without any cover art say so on the row.
+                    val subShown = if (value.iconUrl == null)
+                        value.sub + " · " + Strings.t("cand_no_cover") else value.sub
                     val text = JLabel(
                         "<html><div style='width:440px'><b>${esc(value.title)}</b><br>" +
-                            "<font color='${if (darkMode) "#B8B0D0" else "#666666"}'>${esc(value.sub)}</font></div></html>")
+                            "<font color='${if (darkMode) "#B8B0D0" else "#666666"}'>${esc(subShown)}</font></div></html>")
                     return JPanel(BorderLayout(8, 0)).apply {
                         border = BorderFactory.createEmptyBorder(6, 8, 6, 8)
                         add(iconLabel, BorderLayout.WEST)
@@ -522,6 +752,8 @@ fun searchAndPick(
             dlg.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
             dlg.addWindowListener(object : java.awt.event.WindowAdapter() {
                 override fun windowClosed(e: java.awt.event.WindowEvent) {
+                    // The chooser is gone: its cover thumbnails go too.
+                    iconCache.clear()
                     if (!picked) onSkip?.invoke()
                 }
             })
@@ -532,6 +764,15 @@ fun searchAndPick(
                     if (opt != null) picked = true
                     dlg.dispose()
                     if (opt != null) {
+                        if (trackKey.isNotBlank()) {
+                            val lines = (loadProps().getProperty("cand_memory") ?: "")
+                                .split("\n").filter {
+                                    it.isNotBlank() && !it.startsWith(trackKey + "\t")
+                                }
+                            saveProp("cand_memory",
+                                (listOf(trackKey + "\t" + opt.key) + lines).take(200)
+                                    .joinToString("\n"))
+                        }
                         val wp = progressDialog(Strings.t("working"), null, null)
                         wp.isVisible = true
                         thread {
@@ -604,7 +845,10 @@ fun searchAndPick(
         })
         if (SearchSources.mb) jobs.add(thread {
             try {
-                if (!auto) {
+                if (detail != null) {
+                    for (c in MbClient.searchByTagsOrName(detail.first, detail.second, ""))
+                        synchronized(found) { found.putIfAbsent(c.recordingId, c) }
+                } else if (!auto) {
                     for (c in MbClient.searchFreeText(query))
                         synchronized(found) { found.putIfAbsent(c.recordingId, c) }
                 } else {
@@ -852,7 +1096,10 @@ fun showSettings() {
     val acoustidField = JTextField(props.getProperty("acoustid_key") ?: "", 24)
     bottom.add(JLabel(Strings.t("acoustid_key"))); bottom.add(acoustidField)
     val darkBox = JCheckBox(Strings.t("dark_mode"), darkMode)
-    bottom.add(darkBox); bottom.add(JLabel(""))
+    bottom.add(darkBox)
+    val subBox = JCheckBox(Strings.t("include_subfolders"),
+        props.getProperty("subfolders")?.toBooleanStrictOrNull() ?: true)
+    bottom.add(subBox)
     val backupLabel = JLabel("${Strings.t("backup")}: ${fmtSize(Backup.totalSize(backupDir))}")
     bottom.add(backupLabel)
     bottom.add(JButton(Strings.t("delete_all")).apply {
@@ -871,6 +1118,7 @@ fun showSettings() {
         saveProp("cover_cap", caps[box.selectedIndex].toString())
         sourceKeys.forEachIndexed { i, (key, _) -> saveProp(key, checks[i].isSelected.toString()) }
         saveProp("acoustid_key", acoustidField.text.trim())
+        saveProp("subfolders", subBox.isSelected.toString())
         if (darkBox.isSelected != darkMode) {
             saveProp("dark", darkBox.isSelected.toString())
             info(Strings.t("restart_note"))
@@ -960,29 +1208,67 @@ fun searchApplySelected() {
 
 class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
     private val fields = HashMap<String, JTextField>()
-    private val lyricsArea = JTextArea(row.tag?.lyrics ?: "", 6, 34).apply {
+    private val counts = HashMap<String, JLabel>()
+    private val origFieldBg = HashMap<javax.swing.text.JTextComponent, Color>()
+    /**
+     * The file's tag as the dialog opened, WITHOUT the cover bytes: the
+     * editor holds only a small decoded preview of the cover, and the
+     * real bytes are re-read from the file when saving. (Before, the
+     * dialog started from the list's light tag, so the cover never
+     * showed and a save cleared it.)
+     */
+    private val original: TagData
+    /** Whether the file had a cover when the dialog opened. */
+    private var hasOrigCover = false
+    private var coverPreviewIcon: ImageIcon? = null
+    init {
+        val full = try { TagService.read(row.file) }
+            catch (e: Exception) { row.tag ?: TagData() }
+        hasOrigCover = full.cover != null
+        coverPreviewIcon = full.cover?.let { bytes ->
+            try {
+                val img = ImageIO.read(bytes.inputStream())
+                if (img == null) null
+                else ImageIcon(img.getScaledInstance(180, 180, Image.SCALE_SMOOTH))
+            } catch (e: Exception) { null }
+        }
+        original = full.copy(cover = null)
+    }
+    private val lyricsArea = JTextArea(original.lyrics, 6, 34).apply {
         lineWrap = true; wrapStyleWord = true
     }
     private val mxmKeyField = JTextField(
         loadProps().getProperty("musixmatch_key") ?: "", 34)
-    private var coverBytes: ByteArray? = row.tag?.cover
+    private var coverBytes: ByteArray? = null
     private var coverRemoved = false
-    private var mbIds = (row.tag?.mbRecordingId ?: "") to (row.tag?.mbReleaseId ?: "")
+    private var mbIds = original.mbRecordingId to original.mbReleaseId
+    private var savedClean = false
     private val coverLabel = JLabel("", SwingConstants.CENTER).apply {
         preferredSize = Dimension(180, 180); border = BorderFactory.createLineBorder(Color.GRAY)
     }
 
     init {
-        val d = row.tag ?: TagData()
+        val d = original
         val panel = JPanel(GridBagLayout())
         val gc = GridBagConstraints().apply { insets = Insets(3, 6, 3, 6); anchor = GridBagConstraints.WEST }
         var y = 0
         fun addField(key: String, value: String, labelKey: String = key) {
+            // Label cell: the name, a character count, a clear button.
+            val labelPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
+            labelPanel.add(JLabel(Strings.t(labelKey)))
+            val count = JLabel("0").apply { foreground = Color.GRAY }
+            counts[key] = count
+            labelPanel.add(count)
+            labelPanel.add(JButton("\u2715").apply {
+                margin = Insets(0, 4, 0, 4)
+                addActionListener { fields[key]?.text = "" }
+            })
             gc.gridx = 0; gc.gridy = y
-            panel.add(JLabel(Strings.t(labelKey)), gc)
+            panel.add(labelPanel, gc)
             val tf = JTextField(value, 34)
             gc.gridx = 1; panel.add(tf, gc)
             fields[key] = tf; y++
+            watchField(key, tf)
         }
         addField("filename", row.file.nameWithoutExtension)
         gc.gridx = 1; gc.gridy = y
@@ -1013,8 +1299,18 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
         addField("disc", d.disc); addField("disc_total", d.discTotal)
         addField("comment", d.comment); addField("isrc", d.isrc)
 
-        gc.gridx = 0; gc.gridy = y; panel.add(JLabel(Strings.t("lyrics")), gc)
+        val lyLabel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
+        lyLabel.add(JLabel(Strings.t("lyrics")))
+        val lyCount = JLabel("0").apply { foreground = Color.GRAY }
+        counts["lyrics"] = lyCount
+        lyLabel.add(lyCount)
+        lyLabel.add(JButton("\u2715").apply {
+            margin = Insets(0, 4, 0, 4)
+            addActionListener { lyricsArea.text = "" }
+        })
+        gc.gridx = 0; gc.gridy = y; panel.add(lyLabel, gc)
         gc.gridx = 1; panel.add(JScrollPane(lyricsArea), gc); y++
+        watchField("lyrics", lyricsArea)
         gc.gridx = 1; gc.gridy = y
         panel.add(JButton(Strings.t("get_lyrics")).apply {
             addActionListener { fetchLyrics() }
@@ -1028,7 +1324,14 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
         coverLabel.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 // Click: zoom the cover when there is one, else pick a file.
-                if (coverBytes != null) showCoverZoom() else pickCoverFile()
+                val b = coverBytes
+                if (b != null) showCoverZoom(b)
+                else if (hasOrigCover && !coverRemoved) {
+                    val cur = try { TagService.read(row.file).cover }
+                        catch (ex: Exception) { null }
+                    if (cur != null) showCoverZoom(cur) else pickCoverFile()
+                }
+                else pickCoverFile()
             }
         })
         DropTarget(coverLabel, object : DropTargetAdapter() {
@@ -1045,8 +1348,14 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
         val btns = JPanel()
         btns.add(JButton(Strings.t("pick_image")).apply { addActionListener { pickCoverFile() } })
         btns.add(JButton(Strings.t("from_url")).apply { addActionListener { pickCoverUrl() } })
+        btns.add(JButton(Strings.t("from_clipboard")).apply {
+            addActionListener { pasteCoverFromClipboard() }
+        })
         btns.add(JButton(Strings.t("remove_cover")).apply {
-            addActionListener { coverBytes = null; coverRemoved = true; updateCoverLabel() }
+            addActionListener {
+                coverBytes = null; coverRemoved = true; hasOrigCover = false
+                coverPreviewIcon = null; updateCoverLabel()
+            }
         })
         btns.add(JButton(Strings.t("search")).apply {
             addActionListener {
@@ -1056,15 +1365,89 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
             }
         })
         btns.add(JButton(Strings.t("save")).apply { addActionListener { save() } })
-        btns.add(JButton(Strings.t("cancel")).apply { addActionListener { dispose() } })
+        btns.add(JButton(Strings.t("cancel")).apply { addActionListener { tryClose() } })
 
         contentPane.layout = BorderLayout()
         add(JScrollPane(panel), BorderLayout.CENTER)
         add(btns, BorderLayout.SOUTH)
         setSize(560, 640); setLocationRelativeTo(frame)
+        defaultCloseOperation = DO_NOTHING_ON_CLOSE
+        addWindowListener(object : java.awt.event.WindowAdapter() {
+            override fun windowClosing(e: java.awt.event.WindowEvent) { tryClose() }
+        })
     }
 
     private var coverChanged = false
+
+    /** The original value of one field key, for change marks and dirty checks. */
+    private fun origValueOf(k: String): String = when (k) {
+        "title" -> original.title; "artist" -> original.artist
+        "album" -> original.album; "album_artist" -> original.albumArtist
+        "composer" -> original.composer; "genre" -> original.genre
+        "year" -> original.year; "track" -> original.track
+        "track_total" -> original.trackTotal; "disc" -> original.disc
+        "disc_total" -> original.discTotal; "comment" -> original.comment
+        "isrc" -> original.isrc; "lyrics" -> original.lyrics
+        "filename" -> row.file.nameWithoutExtension
+        else -> ""
+    }
+
+    /**
+     * Watches one input: a value that differs from the file's own gets a
+     * tinted background (and falls back when it returns), and the
+     * character count next to the label stays current.
+     */
+    private fun watchField(k: String, comp: javax.swing.text.JTextComponent) {
+        origFieldBg[comp] = comp.background
+        comp.document.addDocumentListener(object : javax.swing.event.DocumentListener {
+            fun upd() {
+                comp.background = if (comp.text != origValueOf(k))
+                    (if (darkMode) Color(0x6B, 0x55, 0x10) else Color(0xFF, 0xF0, 0xB3))
+                else origFieldBg[comp]
+                counts[k]?.text = comp.text.length.toString()
+            }
+            override fun insertUpdate(e: javax.swing.event.DocumentEvent) = upd()
+            override fun removeUpdate(e: javax.swing.event.DocumentEvent) = upd()
+            override fun changedUpdate(e: javax.swing.event.DocumentEvent) = upd()
+        })
+        counts[k]?.text = comp.text.length.toString()
+    }
+
+    /** True when anything in the dialog differs from what the file holds. */
+    private fun isDirty(): Boolean {
+        if (coverChanged || coverRemoved) return true
+        for ((k, tf) in fields) if (tf.text != origValueOf(k)) return true
+        if (lyricsArea.text != original.lyrics) return true
+        return mbIds.first != original.mbRecordingId ||
+            mbIds.second != original.mbReleaseId
+    }
+
+    /** Closing with unsaved changes asks first. */
+    private fun tryClose() {
+        if (!savedClean && isDirty()) {
+            val res = JOptionPane.showConfirmDialog(this, Strings.t("confirm_discard"),
+                "OtoTag", JOptionPane.OK_CANCEL_OPTION)
+            if (res != JOptionPane.OK_OPTION) return
+        }
+        dispose()
+    }
+
+    /** Pastes a cover image from the clipboard, when one is there. */
+    private fun pasteCoverFromClipboard() {
+        try {
+            val img = Toolkit.getDefaultToolkit().systemClipboard
+                .getData(DataFlavor.imageFlavor) as? Image
+            if (img == null) { info(Strings.t("failed")); return }
+            val w = img.getWidth(null); val h = img.getHeight(null)
+            if (w <= 0 || h <= 0) { info(Strings.t("failed")); return }
+            val bi = java.awt.image.BufferedImage(
+                w, h, java.awt.image.BufferedImage.TYPE_INT_RGB)
+            val g = bi.createGraphics(); g.drawImage(img, 0, 0, null); g.dispose()
+            val out = java.io.ByteArrayOutputStream()
+            ImageIO.write(bi, "png", out)
+            setCover(out.toByteArray())
+        } catch (e: Exception) { fail("${e.javaClass.simpleName}: ${e.message}") }
+    }
 
     private fun setCover(bytes: ByteArray) {
         coverBytes = bytes; coverRemoved = false; coverChanged = true; updateCoverLabel()
@@ -1072,6 +1455,10 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
 
     private fun updateCoverLabel() {
         val b = coverBytes
+        if (b == null && hasOrigCover && !coverRemoved && coverPreviewIcon != null) {
+            coverLabel.icon = coverPreviewIcon; coverLabel.text = ""
+            return
+        }
         if (b != null) {
             try {
                 val img = ImageIO.read(b.inputStream())
@@ -1117,9 +1504,8 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
         }
     }
 
-    /** Large view of the current cover art. */
-    private fun showCoverZoom() {
-        val b = coverBytes ?: return
+    /** Large view of the given cover art. */
+    private fun showCoverZoom(b: ByteArray) {
         // Subsampled decode near the display size (at most 620px on
         // screen): a multi-megapixel cover must not decode whole.
         val img = try {
@@ -1161,47 +1547,77 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
     }
 
     /**
-     * Fetches lyrics for the field values and fills the area: LRCLIB first,
-     * then Musixmatch when the user has entered their (free) API key.
+     * Fetches lyrics from every source in parallel. When more than one
+     * source has lyrics, the user compares the first lines and picks;
+     * the picked text is tidied on the way in. LRCLIB's timestamped
+     * lyrics also land next to the file as .lrc (an identical existing
+     * file is left untouched).
      */
     private fun fetchLyrics() {
         val title = fields["title"]?.text ?: ""
         val artist = fields["artist"]?.text ?: ""
         val album = fields["album"]?.text ?: ""
-        val dur = row.tag?.durationSec ?: 0
+        val dur = original.durationSec
         val key = mxmKeyField.text.trim()
         saveProp("musixmatch_key", key)
         thread {
-            val entry = try {
-                LrclibClient.fetchBest(title, artist, album, dur)
-            } catch (e: Exception) { null }
-            var text: String? = entry?.plainLyrics
-            // LRCLIB's timestamped lyrics also land next to the file as .lrc
-            var lrcSaved = false
-            if (entry != null && entry.syncedLyrics.isNotBlank()) {
-                lrcSaved = try {
-                    File(row.file.parentFile,
-                        row.file.nameWithoutExtension + ".lrc")
-                        .writeText(entry.syncedLyrics, Charsets.UTF_8)
-                    true
-                } catch (e: Exception) { false }
-            }
-            if (text == null) {
-                text = LyricsOvhClient.fetchLyrics(artist, title)
-            }
-            if (text == null && key.isNotBlank()) {
-                text = try {
+            var entry: LrcEntry? = null
+            var ovh: String? = null
+            var mxm: String? = null
+            val jobs = ArrayList<Thread>()
+            jobs.add(thread {
+                entry = try { LrclibClient.fetchBest(title, artist, album, dur) }
+                    catch (e: Exception) { null }
+            })
+            jobs.add(thread {
+                ovh = try { LyricsOvhClient.fetchLyrics(artist, title) }
+                    catch (e: Exception) { null }
+            })
+            if (key.isNotBlank()) jobs.add(thread {
+                mxm = try {
                     MusixmatchClient.apiKey = key
                     MusixmatchClient.fetchLyrics(title, artist)
                 } catch (e: Exception) { null }
-            }
-            val found = text
+            })
+            jobs.forEach { it.join() }
+            val results = ArrayList<Pair<String, String>>()
+            entry?.plainLyrics?.takeIf { it.isNotBlank() }?.let { results.add("LRCLIB" to it) }
+            ovh?.takeIf { it.isNotBlank() }?.let { results.add("Lyrics.ovh" to it) }
+            mxm?.takeIf { it.isNotBlank() }?.let { results.add("Musixmatch" to it) }
+            val lrc = entry
             SwingUtilities.invokeLater {
-                if (found != null) {
-                    lyricsArea.text = found
-                    if (lrcSaved) info(Strings.t("lrc_saved"))
+                when {
+                    results.isEmpty() -> info(Strings.t("no_lyrics"))
+                    results.size == 1 -> applyLyrics(results[0], lrc)
+                    else -> {
+                        val labels = results.map { (srcName, txt) ->
+                            srcName + " \u2014 " + (txt.lineSequence()
+                                .firstOrNull { it.isNotBlank() }?.take(40) ?: "")
+                        }.toTypedArray()
+                        val pick = JOptionPane.showInputDialog(this,
+                            Strings.t("lyrics_pick"), Strings.t("lyrics"),
+                            JOptionPane.PLAIN_MESSAGE, null, labels, labels[0]) as? String
+                        if (pick != null) applyLyrics(results[labels.indexOf(pick)], lrc)
+                    }
                 }
-                else info(Strings.t("no_lyrics"))
+            }
+        }
+    }
+
+    /** Puts picked lyrics into the area (tidied) and saves LRCLIB's .lrc. */
+    private fun applyLyrics(picked: Pair<String, String>, lrc: LrcEntry?) {
+        lyricsArea.text = LyricsText.normalize(picked.second)
+        if (picked.first == "LRCLIB" && lrc != null && lrc.syncedLyrics.isNotBlank()) {
+            thread {
+                try {
+                    val f = File(row.file.parentFile,
+                        row.file.nameWithoutExtension + ".lrc")
+                    val cur = if (f.isFile) f.readText(Charsets.UTF_8) else null
+                    if (cur != lrc.syncedLyrics) {
+                        f.writeText(lrc.syncedLyrics, Charsets.UTF_8)
+                        SwingUtilities.invokeLater { info(Strings.t("lrc_saved")) }
+                    }
+                } catch (e: Exception) { }
             }
         }
     }
@@ -1226,11 +1642,27 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
             collected.copy(cover = capCoverBytes(collected.cover, coverCapPx()))
         else collected
         val newBase = Renamer.sanitize(fields["filename"]?.text ?: "")
+        // Pre-save preview: the same change list the search flow shows.
+        val lines = ArrayList(TagDiff.lines(original, d))
+        val nameChanges = newBase.isNotBlank() && newBase != row.file.nameWithoutExtension
+        if (nameChanges)
+            lines.add("${Strings.t("filename")}: ${row.file.name} \u2192 $newBase.${row.file.extension}")
+        if (lines.isNotEmpty()) {
+            val res = JOptionPane.showConfirmDialog(this, lines.joinToString("\n"),
+                Strings.t("diff_title"), JOptionPane.OK_CANCEL_OPTION)
+            if (res != JOptionPane.OK_OPTION) return
+        }
         thread {
             var fail: String? = null
             try {
+                // An untouched cover is re-read from the file now: the
+                // dialog only ever held a small preview of it.
+                val toWrite = if (!coverChanged && !coverRemoved) {
+                    val cur = TagService.read(row.file)
+                    d.copy(cover = cur.cover)
+                } else d
                 Backup.backup(row.file, backupDir)
-                TagService.write(row.file, d)
+                TagService.write(row.file, toWrite)
                 row.setTagLight(TagService.read(row.file))
                 row.checked = false // acted on: drop the check
                 row.status = Strings.t("done")
@@ -1253,7 +1685,7 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
             }
             SwingUtilities.invokeLater {
                 refresh()
-                if (fail == null) dispose() else fail(fail!!)
+                if (fail == null) { savedClean = true; dispose() } else fail(fail!!)
             }
         }
     }
@@ -1461,6 +1893,7 @@ fun applyUpdateDesktop(info: UpdateInfo) {
                 bat.writeText("@echo off\r\n" +
                     "timeout /t 3 /nobreak >nul\r\n" +
                     "if exist \"%~dp0OtoTag.jar.old\" del /Q \"%~dp0OtoTag.jar.old\"\r\n" +
+                    "if exist \"%~dp0ototag-*.jsa\" del /Q \"%~dp0ototag-*.jsa\"\r\n" +
                     "ren \"%~dp0OtoTag.jar\" OtoTag.jar.old\r\n" +
                     "ren \"%~dp0OtoTag.jar.new\" OtoTag.jar\r\n" +
                     "start \"\" \"%~dp0OtoTag.exe\"\r\n")
@@ -1489,6 +1922,7 @@ fun applyUpdateDesktop(info: UpdateInfo) {
             bat.writeText("@echo off\r\n" +
                 "timeout /t 3 /nobreak >nul\r\n" +
                 "if exist \"%~dp0OtoTag.jar.old\" del /Q \"%~dp0OtoTag.jar.old\"\r\n" +
+                "if exist \"%~dp0ototag-*.jsa\" del /Q \"%~dp0ototag-*.jsa\"\r\n" +
                 "ren \"%~dp0OtoTag.jar\" OtoTag.jar.old\r\n" +
                 "xcopy /E /Y /Q \"%~dp0update-new\\*\" \"%~dp0\" >nul\r\n" +
                 "start \"\" \"%~dp0OtoTag.exe\"\r\n")
@@ -1505,6 +1939,21 @@ fun applyUpdateDesktop(info: UpdateInfo) {
 }
 
 fun main() {
+    // Startup sweep of self-update leftovers (the previous jar, a
+    // half-downloaded one, the extracted update tree): the app folder
+    // starts clean on every launch.
+    thread {
+        try {
+            val jarFile = File(object {}.javaClass.protectionDomain.codeSource.location.toURI())
+            val dir = jarFile.parentFile
+            if (dir != null && File(dir, "OtoTag.exe").isFile) {
+                for (name in listOf("OtoTag.jar.old", "OtoTag.jar.new", "OtoTag-update.zip")) {
+                    try { File(dir, name).delete() } catch (e: Exception) { }
+                }
+                try { File(dir, "update-new").deleteRecursively() } catch (e: Exception) { }
+            }
+        } catch (e: Exception) { }
+    }
     val props = loadProps()
     Strings.lang = Strings.resolve(props.getProperty("lang"), Locale.getDefault().toLanguageTag())
     ItunesClient.country = Locale.getDefault().country.ifBlank { "JP" }
@@ -1565,6 +2014,26 @@ fun main() {
         }
         table.selectionBackground = if (darkMode) Color(0x4C, 0x1D, 0x95)
             else Color(0xED, 0xE9, 0xFF)
+        table.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                val r = table.rowAtPoint(e.point)
+                val c = table.columnAtPoint(e.point)
+                if (r < 0) return
+                val disp = displayRows().getOrNull(r) ?: return
+                if (disp is String) {
+                    // Folder header: collapse / expand its songs.
+                    if (disp in collapsedFolders) collapsedFolders.remove(disp)
+                    else collapsedFolders.add(disp)
+                    refresh()
+                } else if (disp is Row && (c == 4 || c == 5)) {
+                    // Clicking an artist / album cell quick-filters by it.
+                    val v = if (c == 4) disp.tag?.artist else disp.tag?.album
+                    if (!v.isNullOrBlank()) {
+                        quickFilter = v; updateQuickBar(); refresh()
+                    }
+                }
+            }
+        })
         if (darkMode) table.selectionForeground = Color(0xF0, 0xEB, 0xFA)
 
         val top = JPanel(FlowLayout(FlowLayout.LEFT)).apply { background = themeBg }
@@ -1607,6 +2076,26 @@ fun main() {
         }
         top.add(JLabel(Strings.t("sort")))
         top.add(sortBox)
+        top.add(JButton("\u2191\u2193").apply {
+            addActionListener { sortReverse = !sortReverse; refresh() }
+        })
+        top.add(JButton(Strings.t("back_to_top")).apply {
+            addActionListener {
+                if (table.rowCount > 0)
+                    table.scrollRectToVisible(table.getCellRect(0, 0, true))
+            }
+        })
+        top.add(JButton(Strings.t("help_title")).apply { vivid(this, 0x6D28D9) }.apply {
+            addActionListener {
+                val area = JTextArea(Strings.t("help_body")).apply {
+                    isEditable = false; lineWrap = true; wrapStyleWord = true
+                }
+                val dlg = JDialog(frame, Strings.t("help_title"), true)
+                dlg.contentPane.add(JScrollPane(area))
+                dlg.setSize(480, 320); dlg.setLocationRelativeTo(frame)
+                dlg.isVisible = true
+            }
+        })
         val langBox = JComboBox(Strings.LANGS.map { Strings.LANG_NAMES[it] }.toTypedArray())
         langBox.selectedIndex = Strings.LANGS.indexOf(Strings.lang)
         langBox.addActionListener {
@@ -1640,9 +2129,31 @@ fun main() {
         actions.add(JButton(Strings.t("undo")).apply { vivid(this, 0x64748B); addActionListener { undoSelected() } })
         actions.add(JButton(Strings.t("delete_file")).apply { vivid(this, 0xBE2828); addActionListener { deleteSelected() } })
 
+        quickBar = JLabel("").apply {
+            foreground = Color(0x6D, 0x28, 0xD9)
+            isVisible = false
+            border = BorderFactory.createEmptyBorder(2, 10, 2, 10)
+            addMouseListener(object : MouseAdapter() {
+                override fun mouseClicked(e: MouseEvent) {
+                    quickFilter = null; updateQuickBar(); refresh()
+                }
+            })
+        }
+        val north = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            background = themeBg
+            add(top); add(quickBar)
+        }
+        val scrollPane = JScrollPane(table)
+        scrollPane.viewport.addChangeListener {
+            val rect = table.visibleRect
+            val first = table.rowAtPoint(Point(0, rect.y))
+            val last = table.rowAtPoint(Point(0, rect.y + rect.height - 1))
+            if (first >= 0 && last >= first) visibleCenterRow = (first + last) / 2
+        }
         val root = JPanel(BorderLayout()).apply { background = themeBg }
-        root.add(top, BorderLayout.NORTH)
-        root.add(JScrollPane(table), BorderLayout.CENTER)
+        root.add(north, BorderLayout.NORTH)
+        root.add(scrollPane, BorderLayout.CENTER)
         root.add(actions, BorderLayout.SOUTH)
         frame.contentPane = root
         frame.setSize(880, 560)

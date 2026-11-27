@@ -24,6 +24,10 @@ import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
+/** View references of one recycled song row. */
+private class SongHolder(
+    val cover: ImageView, val title: TextView, val sub: TextView, val cb: CheckBox)
+
 class MainActivity : Activity() {
 
     private lateinit var listView: ListView
@@ -34,6 +38,22 @@ class MainActivity : Activity() {
     private var filterMode: Int = 0
     /** List sort: 0 = file name, 1 = title, 2 = album, 3 = artist. */
     private var sortMode: Int = 0
+    /** Sort direction flip (the ↑↓ button next to the sort spinner). */
+    private var sortReverse: Boolean = false
+    /** Quick filter set by tapping an artist/album in a row; null = off. */
+    private var quickFilter: String? = null
+    private lateinit var quickBar: TextView
+    /** Bumped whenever an item's tag/error changes; keys the list caches. */
+    private var dataVersion: Int = 0
+    private var shownCache: List<Item>? = null
+    private var shownCacheKey: String = ""
+    private var rowsCache: List<Any>? = null
+    /** Folders currently collapsed in the grouped list. */
+    private val collapsedFolders = HashSet<String>()
+
+    /** One display row: either a folder header or a song. */
+    private class HeaderRow(val folder: String, val count: Int)
+    private class SongRow(val item: Item)
     // Thumbnail decoding runs on two workers fed by a priority queue:
     // rows near the visible window decode first, so fast scrolling does
     // not leave a backlog of stale decodes ahead of what is on screen.
@@ -62,9 +82,16 @@ class MainActivity : Activity() {
         thumbQueue.put(ThumbTask(kotlin.math.abs(position - visibleCenter), body))
     }
 
-    /** The items the list currently shows, after the filter and sort. */
+    /**
+     * The items the list currently shows, after the filter and sort.
+     * The result is memoized: scrolling calls this constantly, and the
+     * filter/sort only has to run again when the inputs actually change
+     * (filter, sort, direction, quick filter, or the data version).
+     */
     private fun shownItems(): List<Item> {
-        val filtered = when (filterMode) {
+        val key = "$filterMode|$sortMode|$sortReverse|$quickFilter|$dataVersion|${Items.list.size}"
+        shownCache?.let { if (shownCacheKey == key) return it }
+        var filtered = when (filterMode) {
             1 -> Items.list.filter { it.tag == null || it.tag!!.isBasicallyEmpty() }
             2 -> Items.list.filter { !it.hasCover }
             3 -> Items.list.filter { it.error != null }
@@ -74,13 +101,45 @@ class MainActivity : Activity() {
             7 -> Items.list.filter { it.tag?.lyrics.isNullOrBlank() }
             else -> Items.list
         }
-        return when (sortMode) {
+        quickFilter?.let { q ->
+            filtered = filtered.filter { it.tag?.artist == q || it.tag?.album == q }
+        }
+        val sorted = when (sortMode) {
             1 -> filtered.sortedBy { (it.tag?.title?.ifBlank { null } ?: it.name).lowercase() }
             2 -> filtered.sortedBy { (it.tag?.album?.ifBlank { null } ?: it.name).lowercase() }
             3 -> filtered.sortedBy { (it.tag?.artist?.ifBlank { null } ?: it.name).lowercase() }
             4 -> filtered.sortedByDescending { it.lastModified }
             else -> filtered.sortedBy { it.name.lowercase() }
         }
+        val result = if (sortReverse) sorted.reversed() else sorted
+        shownCache = result; shownCacheKey = key
+        rowsCache = null
+        return result
+    }
+
+    /**
+     * Display rows for the adapter: when the songs come from more than
+     * one folder, folder headers are interleaved (tap to collapse), so a
+     * big tree stays navigable. Single-folder lists get no headers.
+     */
+    private fun displayRows(): List<Any> {
+        rowsCache?.let { return it }
+        val shown = shownItems()
+        val folders = shown.map { it.folder }.distinct()
+        val rows: List<Any> = if (folders.size <= 1) {
+            shown.map { SongRow(it) }
+        } else {
+            val byFolder = LinkedHashMap<String, MutableList<Item>>()
+            for (it in shown) byFolder.getOrPut(it.folder) { ArrayList() }.add(it)
+            val out = ArrayList<Any>()
+            for ((folder, items) in byFolder) {
+                out.add(HeaderRow(folder, items.size))
+                if (folder !in collapsedFolders) for (it in items) out.add(SongRow(it))
+            }
+            out
+        }
+        rowsCache = rows
+        return rows
     }
 
     /** Loads the per-source on/off switches into the core search flags. */
@@ -130,6 +189,11 @@ class MainActivity : Activity() {
             isChecked = Ui.dark
         }
         layout.addView(darkBox)
+        val subBox = CheckBox(this).apply {
+            text = Strings.t("include_subfolders")
+            isChecked = prefs.getBoolean("subfolders", true)
+        }
+        layout.addView(subBox)
         val backupLabel = TextView(this).apply {
             text = "${Strings.t("backup")}: ${fmtSize(Backup.totalSize(SafStore.backupDir(this@MainActivity)))}"
         }
@@ -162,6 +226,7 @@ class MainActivity : Activity() {
                 e.putString("acoustid_key", acoustidInput.text.toString().trim())
                 val darkChanged = darkBox.isChecked != Ui.dark
                 if (darkChanged) e.putBoolean("dark", darkBox.isChecked)
+                e.putBoolean("subfolders", subBox.isChecked)
                 e.apply()
                 loadSourcePrefs()
                 if (darkChanged) recreate()
@@ -370,6 +435,7 @@ class MainActivity : Activity() {
             else android.R.style.Theme_Material_Light)
         ItunesClient.country = Locale.getDefault().country.ifBlank { "JP" }
         loadSourcePrefs()
+        ThumbCache.init(this)
         // Housekeeping is deferred: startup stays light, and the prune +
         // previous-session copy cleanup run half a minute later instead.
         thread {
@@ -417,6 +483,16 @@ class MainActivity : Activity() {
         header.addView(Button(this).apply {
             text = Strings.t("settings"); Ui.styleButton(this, Ui.MAGENTA)
             setOnClickListener { showSettings() }
+        })
+        header.addView(Button(this).apply {
+            text = Strings.t("help_title"); Ui.styleButton(this, Ui.VIOLET)
+            setOnClickListener {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle(Strings.t("help_title"))
+                    .setMessage(Strings.t("help_body"))
+                    .setPositiveButton(Strings.t("ok"), null)
+                    .show()
+            }
         })
         header.addView(TextView(this).apply {
             text = Strings.t("language"); textSize = 13f
@@ -502,21 +578,46 @@ class MainActivity : Activity() {
             text = Strings.t("sort"); setTextColor(Ui.SUB); setPadding(dp(12), 0, 0, 0)
         })
         filterRow.addView(sortSpinner)
+        filterRow.addView(Button(this).apply {
+            text = "↑↓"
+            setOnClickListener {
+                sortReverse = !sortReverse
+                adapter.notifyDataSetChanged()
+            }
+        })
+        filterRow.addView(Button(this).apply {
+            text = Strings.t("back_to_top")
+            setOnClickListener { listView.setSelection(0) }
+        })
         root.addView(filterRow)
+
+        // Quick-filter bar (set by tapping an artist/album in a row).
+        quickBar = TextView(this).apply {
+            visibility = View.GONE
+            textSize = 13f
+            setTextColor(Ui.VIOLET)
+            setPadding(dp(16), dp(4), dp(12), dp(4))
+            setOnClickListener {
+                quickFilter = null; updateQuickBar(); adapter.notifyDataSetChanged()
+            }
+        }
+        root.addView(quickBar)
 
         adapter = ItemAdapter()
         listView = ListView(this).apply {
             adapter = this@MainActivity.adapter
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
-            divider = null
-            dividerHeight = 0
+            divider = android.graphics.drawable.ColorDrawable(
+                android.graphics.Color.TRANSPARENT)
+            dividerHeight = dp(6)
             setBackgroundColor(Ui.BG)
             // Thumbnail decoding prioritizes the rows around this window.
             setOnScrollListener(object : android.widget.AbsListView.OnScrollListener {
                 override fun onScroll(view: android.widget.AbsListView, first: Int,
                     visible: Int, total: Int) {
                     visibleCenter = first + visible / 2
+                    ThumbCache.centerPos = visibleCenter
                 }
                 override fun onScrollStateChanged(view: android.widget.AbsListView, state: Int) {}
             })
@@ -571,6 +672,13 @@ class MainActivity : Activity() {
     }
 
     private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+
+    /** Shows or hides the quick-filter bar to match [quickFilter]. */
+    private fun updateQuickBar() {
+        val q = quickFilter
+        if (q == null) quickBar.visibility = View.GONE
+        else { quickBar.visibility = View.VISIBLE; quickBar.text = "» $q ✕" }
+    }
 
     private fun fmtSize(bytes: Long): String =
         if (bytes >= 1024 * 1024) String.format(Locale.US, "%.1f MB", bytes / 1048576.0)
@@ -675,6 +783,8 @@ class MainActivity : Activity() {
                                 // applied via search: uncheck it so a re-run skips it
                                 item.checked = false
                                 ok = true
+                                // The working copy has served its purpose.
+                                SafStore.discardCopy(item)
                             }
                         } catch (e: Exception) { item.error = e.message }
                         runOnUiThread {
@@ -888,6 +998,7 @@ class MainActivity : Activity() {
                         SafStore.writeBack(this, item)
                         item.setTagLight(TagService.read(item.local!!))
                         item.checked = false // acted on: drop the check
+                        SafStore.discardCopy(item)
                         restored++
                     }
                 } catch (e: Exception) { item.error = e.message }
@@ -915,25 +1026,53 @@ class MainActivity : Activity() {
         id.substringAfterLast('/').ifBlank { id }
     } catch (e: Exception) { uriStr }
 
-    /** Folder button: offer the recent folders first when there are any. */
+    /** Folders pinned by the user (tree URIs), kept apart from the history. */
+    private fun pinnedTrees(): List<String> =
+        (prefs.getString("pinned_trees", "") ?: "").split("\n").filter { it.isNotBlank() }
+
+    /** Folder button: pinned folders first, then the recent ones. */
     private fun pickFolderOrHistory() {
-        val recent = recentTrees()
-        if (recent.isEmpty()) {
+        val pinned = pinnedTrees()
+        val recent = recentTrees().filter { it !in pinned }
+        if (pinned.isEmpty() && recent.isEmpty()) {
             startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_TREE)
             return
         }
-        val labels = recent.map { treeLabel(it) } + Strings.t("pick_new_folder")
+        val all = pinned + recent
+        val labels = all.mapIndexed { i, uriStr ->
+            (if (i < pinned.size) "★ " else "") + treeLabel(uriStr)
+        } + Strings.t("pick_new_folder")
         AlertDialog.Builder(this)
             .setTitle(Strings.t("recent_folders"))
             .setItems(labels.toTypedArray()) { _, which ->
-                if (which < recent.size) {
-                    val uri = Uri.parse(recent[which])
-                    prefs.edit().putString("tree", recent[which]).apply()
+                if (which < all.size) {
+                    val uri = Uri.parse(all[which])
+                    prefs.edit().putString("tree", all[which]).apply()
                     rememberTree(uri)
                     loadTree(uri)
                 } else {
                     startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_TREE)
                 }
+            }
+            .setNeutralButton(Strings.t("pin_folder")) { _, _ -> showPinToggle() }
+            .setNegativeButton(Strings.t("cancel"), null)
+            .show()
+    }
+
+    /** Multi-choice dialog that pins/unpins folders from the known ones. */
+    private fun showPinToggle() {
+        val known = (pinnedTrees() + recentTrees()).distinct()
+        if (known.isEmpty()) return
+        val pinned = pinnedTrees().toMutableSet()
+        val checked = known.map { it in pinned }.toBooleanArray()
+        AlertDialog.Builder(this)
+            .setTitle(Strings.t("pinned_folders"))
+            .setMultiChoiceItems(known.map { treeLabel(it) }.toTypedArray(), checked) { _, which, on ->
+                if (on) pinned.add(known[which]) else pinned.remove(known[which])
+            }
+            .setPositiveButton(Strings.t("ok")) { _, _ ->
+                prefs.edit().putString("pinned_trees",
+                    known.filter { it in pinned }.joinToString("\n")).apply()
             }
             .setNegativeButton(Strings.t("cancel"), null)
             .show()
@@ -980,13 +1119,23 @@ class MainActivity : Activity() {
     private fun loadTree(treeUri: Uri) {
         stopPlayer()
         toast(Strings.t("working"))
+        SafStore.includeSubfolders = prefs.getBoolean("subfolders", true)
+        // A different folder: the search session caches belong to the old one.
+        SearchFlow.onFolderChanged()
+        collapsedFolders.clear()
+        quickFilter = null
+        runOnUiThread { if (::quickBar.isInitialized) updateQuickBar() }
         thread {
             val items = try { SafStore.enumerateTree(this, treeUri) } catch (e: Exception) { emptyList() }
             Items.list.clear(); Items.list.addAll(items)
+            dataVersion++
             runOnUiThread { adapter.notifyDataSetChanged() }
-            // Read tags in parallel so thumbnails and titles fill in fast.
+            // Read tags in parallel so thumbnails and titles fill in
+            // fast; the pool size follows the folder size (a handful of
+            // files does not need six readers, a big tree wants them).
             val next = java.util.concurrent.atomic.AtomicInteger(0)
-            val workers = (1..4).map {
+            val nWorkers = when { items.size < 20 -> 2; items.size <= 100 -> 4; else -> 6 }
+            val workers = (1..nWorkers).map {
                 thread {
                     while (true) {
                         val i = next.getAndIncrement()
@@ -996,6 +1145,7 @@ class MainActivity : Activity() {
                             SafStore.ensureLocal(this, item)
                             item.setTagLight(TagService.read(item.local!!))
                         } catch (e: Exception) { item.error = e.message }
+                        dataVersion++
                         runOnUiThread { adapter.notifyDataSetChanged() }
                     }
                 }
@@ -1018,6 +1168,7 @@ class MainActivity : Activity() {
                     SafStore.ensureLocal(this, item)
                     item.setTagLight(TagService.read(item.local!!))
                 } catch (e: Exception) { item.error = e.message }
+                dataVersion++
                 runOnUiThread { adapter.notifyDataSetChanged() }
             }
         }
@@ -1078,88 +1229,156 @@ class MainActivity : Activity() {
             REQ_EDIT -> {
                 // Saved in the editor: the file was acted on, drop its check.
                 if (resultCode == RESULT_OK) lastEdited?.checked = false
+                dataVersion++
                 adapter.notifyDataSetChanged()
             }
         }
     }
 
     inner class ItemAdapter : BaseAdapter() {
-        override fun getCount() = shownItems().size
-        override fun getItem(pos: Int) = shownItems()[pos]
+        override fun getCount() = displayRows().size
+        override fun getItem(pos: Int) = displayRows()[pos]
         override fun getItemId(pos: Int) = pos.toLong()
+        override fun getViewTypeCount() = 2
+        override fun getItemViewType(pos: Int) =
+            if (displayRows()[pos] is HeaderRow) 0 else 1
+
         override fun getView(pos: Int, convertView: View?, parent: ViewGroup?): View {
-            val item = shownItems()[pos]
-            val d = { v: Int -> (v * resources.displayMetrics.density).toInt() }
-            // white rounded card on the lavender background
-            val outer = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(d(10), d(5), d(10), d(5))
+            val rowObj = displayRows()[pos]
+            if (rowObj is HeaderRow) {
+                val tv = (convertView as? TextView) ?: TextView(this@MainActivity).apply {
+                    textSize = 13f
+                    setPadding(dp(16), dp(10), dp(12), dp(6))
+                }
+                val arrow = if (rowObj.folder in collapsedFolders) "\u25B8" else "\u25BE"
+                tv.text = "$arrow ${rowObj.folder.ifBlank { "/" }} (${rowObj.count})"
+                tv.setTextColor(Ui.VIOLET)
+                tv.setOnClickListener {
+                    if (rowObj.folder in collapsedFolders) collapsedFolders.remove(rowObj.folder)
+                    else collapsedFolders.add(rowObj.folder)
+                    rowsCache = null
+                    notifyDataSetChanged()
+                }
+                return tv
             }
-            val row = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                background = Ui.card(this@MainActivity)
-                setPadding(d(10), d(8), d(6), d(8))
-                minimumHeight = d(68)
+            val item = (rowObj as SongRow).item
+            // Flat, recycled row: one horizontal layout per song (no
+            // nested wrappers), rebound on reuse instead of rebuilt.
+            val row: LinearLayout
+            val h: SongHolder
+            if (convertView is LinearLayout && convertView.tag is SongHolder) {
+                row = convertView; h = convertView.tag as SongHolder
+            } else {
+                val cover = ImageView(this@MainActivity).apply {
+                    layoutParams = LinearLayout.LayoutParams(dp(52), dp(52)).apply {
+                        marginEnd = dp(10)
+                    }
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                }
+                val title = TextView(this@MainActivity).apply {
+                    textSize = 15f; setTextColor(Ui.INK)
+                    setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.END
+                }
+                val sub = TextView(this@MainActivity).apply {
+                    textSize = 12f
+                    setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.END
+                }
+                val texts = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    addView(title); addView(sub)
+                }
+                val cb = CheckBox(this@MainActivity)
+                row = LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    background = Ui.card(this@MainActivity)
+                    setPadding(dp(10), dp(8), dp(6), dp(8))
+                    minimumHeight = dp(68)
+                    addView(cover); addView(texts); addView(cb)
+                }
+                h = SongHolder(cover, title, sub, cb)
+                row.tag = h
             }
-            outer.addView(row)
-            // cover thumbnail (gradient placeholder when there is no cover); tap to play/stop
-            val cover = ImageView(this@MainActivity).apply {
-                layoutParams = LinearLayout.LayoutParams(d(52), d(52)).apply { marginEnd = d(10) }
-                scaleType = ImageView.ScaleType.CENTER_CROP
-                if (item == playingItem && player != null) {
-                    setImageResource(android.R.drawable.ic_media_pause)
-                    background = Ui.coverPlaceholder(this@MainActivity)
-                } else {
-                    // decode thumbnails off the UI thread; the row refreshes
-                    // when the bitmap is ready (and it is cached afterwards)
-                    val bmp = item.peekThumbnail()
-                    if (bmp != null) setImageBitmap(bmp)
-                    else {
-                        setImageBitmap(Ui.noCoverBitmap())
-                        if (item.hasCover && !item.thumbLoading) {
-                            item.thumbLoading = true
-                            enqueueThumb(pos) {
-                                try { item.thumbnail() } catch (e: Exception) { }
-                                item.thumbLoading = false
-                                runOnUiThread { adapter.notifyDataSetChanged() }
-                            }
+            h.title.text = item.name
+            bindSub(h.sub, item)
+            h.cb.setOnCheckedChangeListener(null)
+            h.cb.isChecked = item.checked
+            h.cb.setOnCheckedChangeListener { _, v -> item.checked = v }
+            h.cover.setOnClickListener { togglePlay(item) }
+            row.setOnClickListener { togglePlay(item) }
+            if (item == playingItem && player != null) {
+                h.cover.setImageResource(android.R.drawable.ic_media_pause)
+                h.cover.background = Ui.coverPlaceholder(this@MainActivity)
+            } else {
+                h.cover.background = null
+                val bmp = item.peekThumbnail()
+                if (bmp != null) h.cover.setImageBitmap(bmp)
+                else {
+                    h.cover.setImageBitmap(Ui.noCoverBitmap())
+                    if (item.hasCover && !item.thumbLoading) {
+                        item.thumbLoading = true
+                        enqueueThumb(pos) {
+                            try { item.thumbnail() } catch (e: Exception) { }
+                            item.thumbLoading = false
+                            runOnUiThread { adapter.notifyDataSetChanged() }
                         }
                     }
                 }
-                setOnClickListener { togglePlay(item) }
             }
-            row.addView(cover)
-            val texts = LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            return row
+        }
+
+        /**
+         * The row's second line: "title — artist · album", with badges
+         * for a sidecar .lrc ([LRC]) and a non-square cover (▭), and the
+         * artist / album tappable to quick-filter the list by that value.
+         */
+        private fun bindSub(sub: TextView, item: Item) {
+            if (item.error != null) {
+                sub.text = "${Strings.t("failed")}: ${item.error}"
+                sub.setTextColor(0xFFD32F2F.toInt())
+                sub.movementMethod = null
+                return
             }
-            texts.addView(TextView(this@MainActivity).apply {
-                text = item.name; textSize = 15f
-                setTextColor(Ui.INK)
-                setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.END
-            })
-            val sub = when {
-                item.error != null -> "${Strings.t("failed")}: ${item.error}"
-                item.tag != null && !item.tag!!.isBasicallyEmpty() ->
-                    "${item.tag!!.title} — ${item.tag!!.artist}"
-                else -> "—"
+            val tag = item.tag
+            val badges = StringBuilder()
+            if (item.hasLrc) badges.append(" [LRC]")
+            if (item.hasCover && tag != null && tag.coverW > 0 && tag.coverW != tag.coverH)
+                badges.append(" \u25AD")
+            if (tag == null || tag.isBasicallyEmpty()) {
+                sub.text = "\u2014" + badges.toString()
+                sub.setTextColor(Ui.SUB)
+                sub.movementMethod = null
+                return
             }
-            texts.addView(TextView(this@MainActivity).apply {
-                text = sub; textSize = 12f
-                setTextColor(if (item.error != null) 0xFFD32F2F.toInt() else Ui.SUB)
-                setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.END
-            })
-            // tapping the title area plays/stops the song, like the thumbnail
-            texts.setOnClickListener { togglePlay(item) }
-            row.setOnClickListener { togglePlay(item) }
-            row.addView(texts)
-            val cb = CheckBox(this@MainActivity).apply {
-                isChecked = item.checked
-                setOnCheckedChangeListener { _, v -> item.checked = v }
+            val titlePart = tag.title.ifBlank { "\u2014" }
+            val full = buildString {
+                append(titlePart)
+                if (tag.artist.isNotBlank()) append(" \u2014 ").append(tag.artist)
+                if (tag.album.isNotBlank()) append(" \u00B7 ").append(tag.album)
+                append(badges)
             }
-            row.addView(cb)
-            return outer
+            val span = android.text.SpannableString(full)
+            fun link(value: String) {
+                if (value.isBlank()) return
+                val startAt = full.indexOf(value, titlePart.length)
+                if (startAt < 0) return
+                span.setSpan(object : android.text.style.ClickableSpan() {
+                    override fun onClick(w: View) {
+                        quickFilter = value; updateQuickBar(); notifyDataSetChanged()
+                    }
+                    override fun updateDrawState(ds: android.text.TextPaint) {
+                        ds.color = Ui.VIOLET; ds.isUnderlineText = false
+                    }
+                }, startAt, startAt + value.length,
+                    android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            link(tag.artist); link(tag.album)
+            sub.text = span
+            sub.setTextColor(Ui.SUB)
+            sub.movementMethod = android.text.method.LinkMovementMethod.getInstance()
         }
     }
 

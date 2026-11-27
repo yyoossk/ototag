@@ -18,6 +18,19 @@ class EditActivity : Activity() {
     private var coverRemoved = false
     /** True when the cover was replaced here (pick or search), so the size cap applies. */
     private var coverChanged = false
+    /** The tag as loaded from the file; the baseline for change marks and the save preview. */
+    private var original: TagData = TagData()
+    private var originalLoaded = false
+    /** Whether the file had a cover when the editor opened (its bytes are NOT kept). */
+    private var hasOrigCover = false
+    /** Decoded preview of the current cover (display only, never written). */
+    private var coverPreview: android.graphics.Bitmap? = null
+    /** Set once a save succeeded, so leaving does not ask about discarding. */
+    private var savedClean = false
+    /** Per-field label rows' count labels, keyed like [inputs]. */
+    private val counts = HashMap<String, TextView>()
+    /** Default backgrounds of the inputs, restored when a field is back to its original value. */
+    private val origBg = HashMap<EditText, android.graphics.drawable.Drawable?>()
     private var player: MediaPlayer? = null
     private var playBtn: Button? = null
     private var lyricsInput: EditText? = null
@@ -56,12 +69,28 @@ class EditActivity : Activity() {
                 full = TagService.read(it.local!!)
                 it.setTagLight(full)
             } catch (e: Exception) { it.error = e.message }
-            runOnUiThread { fillFields(full ?: TagData()) }
+            runOnUiThread {
+                original = full ?: TagData()
+                originalLoaded = true
+                fillFields(original)
+            }
         }
 
-        root.addView(TextView(this).apply { text = Strings.t("filename"); setTextColor(Ui.SUB) })
+        val fnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        fnRow.addView(TextView(this).apply {
+            text = Strings.t("filename"); setTextColor(Ui.SUB)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val fnCount = TextView(this).apply { textSize = 11f; setTextColor(Ui.SUB) }
+        counts["filename"] = fnCount
+        fnRow.addView(fnCount)
+        root.addView(fnRow)
         filenameInput = EditText(this).apply { setText(it.name.substringBeforeLast('.')) }
         root.addView(filenameInput)
+        watchField("filename", filenameInput)
         root.addView(TextView(this).apply { text = "." + it.ext })
         root.addView(Button(this).apply {
             text = Strings.t("from_filename"); Ui.styleButton(this, Ui.ORANGE)
@@ -75,7 +104,25 @@ class EditActivity : Activity() {
         })
 
         for (k in fieldKeys) {
-            root.addView(TextView(this).apply { text = Strings.t(k); setTextColor(Ui.SUB) })
+            // Label row: the field name, its character count, and a
+            // per-field clear button.
+            val labelRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = android.view.Gravity.CENTER_VERTICAL
+            }
+            labelRow.addView(TextView(this).apply {
+                text = Strings.t(k); setTextColor(Ui.SUB)
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            })
+            val count = TextView(this).apply { text = "0"; textSize = 11f; setTextColor(Ui.SUB) }
+            counts[k] = count
+            labelRow.addView(count)
+            labelRow.addView(Button(this).apply {
+                text = "✕"; textSize = 11f
+                layoutParams = LinearLayout.LayoutParams(96, 72)
+                setOnClickListener { inputs[k]?.setText("") }
+            })
+            root.addView(labelRow)
             // The genre field offers the common genres as quick picks
             // (still freely editable).
             val et: EditText = if (k == "genre") {
@@ -87,6 +134,7 @@ class EditActivity : Activity() {
                 }
             } else EditText(this)
             inputs[k] = et; root.addView(et)
+            watchField(k, et)
         }
 
         root.addView(TextView(this).apply { text = Strings.t("cover"); setTextColor(Ui.SUB) })
@@ -94,8 +142,10 @@ class EditActivity : Activity() {
             layoutParams = LinearLayout.LayoutParams(360, 360)
             // Tap: zoom the cover when there is one, otherwise pick an image.
             setOnClickListener {
-                val bytes = coverBytes ?: item?.tag?.cover
-                if (bytes != null) showCoverZoom(bytes) else pickImage()
+                val bytes = coverBytes
+                if (bytes != null) showCoverZoom(bytes)
+                else if (hasOrigCover && !coverRemoved) zoomFileCover()
+                else pickImage()
             }
         }
         root.addView(coverView)
@@ -106,15 +156,39 @@ class EditActivity : Activity() {
         })
         coverBtns.addView(Button(this).apply {
             text = Strings.t("remove_cover"); Ui.styleButton(this, Ui.ORANGE)
-            setOnClickListener { coverBytes = null; coverRemoved = true; coverView.setImageBitmap(null) }
+            setOnClickListener {
+                coverBytes = null; coverRemoved = true; coverPreview = null
+                hasOrigCover = false
+                coverView.setImageBitmap(null)
+            }
         })
         coverBtns.addView(Button(this).apply {
             text = Strings.t("from_url"); Ui.styleButton(this, Ui.TEAL)
             setOnClickListener { promptCoverUrl() }
         })
+        coverBtns.addView(Button(this).apply {
+            text = Strings.t("from_clipboard"); Ui.styleButton(this, Ui.VIOLET)
+            setOnClickListener { pasteCoverFromClipboard() }
+        })
         root.addView(coverBtns)
 
-        root.addView(TextView(this).apply { text = Strings.t("lyrics"); setTextColor(Ui.SUB) })
+        val lyRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.CENTER_VERTICAL
+        }
+        lyRow.addView(TextView(this).apply {
+            text = Strings.t("lyrics"); setTextColor(Ui.SUB)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val lyCount = TextView(this).apply { text = "0"; textSize = 11f; setTextColor(Ui.SUB) }
+        counts["lyrics"] = lyCount
+        lyRow.addView(lyCount)
+        lyRow.addView(Button(this).apply {
+            text = "✕"; textSize = 11f
+            layoutParams = LinearLayout.LayoutParams(96, 72)
+            setOnClickListener { lyricsInput?.setText("") }
+        })
+        root.addView(lyRow)
         lyricsInput = EditText(this).apply {
             minLines = 4
             gravity = android.view.Gravity.TOP or android.view.Gravity.START
@@ -122,6 +196,7 @@ class EditActivity : Activity() {
                 android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
         }
         root.addView(lyricsInput)
+        watchField("lyrics", lyricsInput!!)
         root.addView(Button(this).apply {
             text = Strings.t("get_lyrics"); Ui.styleButton(this, Ui.TEAL)
             setOnClickListener { fetchLyrics() }
@@ -224,17 +299,127 @@ class EditActivity : Activity() {
         set("isrc", d.isrc)
         if (!d.partial || d.lyrics.isNotBlank()) lyricsInput?.setText(d.lyrics)
         if (d.cover != null) {
-            coverBytes = d.cover; coverRemoved = false
-            if (fromSearch) coverChanged = true
-            coverView.setImageBitmap(BitmapFactory.decodeByteArray(d.cover, 0, d.cover!!.size))
+            coverRemoved = false
+            if (fromSearch) {
+                // A picked cover is the new cover: keep its bytes to write.
+                coverChanged = true
+                coverBytes = d.cover
+            } else {
+                // The file's own cover: hold only a small decoded preview;
+                // the bytes are re-read from the file when saving.
+                hasOrigCover = true
+                coverBytes = null
+            }
+            coverPreview = decodePreview(d.cover!!)
+            coverView.setImageBitmap(coverPreview)
         }
         // keep MBIDs across a search-pick so they get written on save
         if (!d.partial) pendingMbIds = d.mbRecordingId to d.mbReleaseId
     }
 
+    /** The original value of one field key, for change marks and dirty checks. */
+    private fun origValue(k: String): String = when (k) {
+        "title" -> original.title; "artist" -> original.artist
+        "album" -> original.album; "album_artist" -> original.albumArtist
+        "composer" -> original.composer; "genre" -> original.genre
+        "year" -> original.year; "track" -> original.track
+        "track_total" -> original.trackTotal; "disc" -> original.disc
+        "disc_total" -> original.discTotal; "comment" -> original.comment
+        "isrc" -> original.isrc; "lyrics" -> original.lyrics
+        "filename" -> item?.name?.substringBeforeLast('.') ?: ""
+        else -> ""
+    }
+
     /**
-     * Fetches lyrics for the field values and fills the box: LRCLIB first,
-     * then Lyrics.ovh, then Musixmatch when a (free) API key is entered.
+     * Watches one input: fields whose value differs from the file's own
+     * get a tinted background (and fall back when the value returns), and
+     * the character count next to the label stays current.
+     */
+    private fun watchField(k: String, et: EditText) {
+        origBg[et] = et.background
+        et.addTextChangedListener(object : android.text.TextWatcher {
+            override fun afterTextChanged(s: android.text.Editable?) {
+                if (et.text.toString() != origValue(k))
+                    et.setBackgroundColor(if (Ui.dark) 0xFF6B5510.toInt() else 0xFFFFF0B3.toInt())
+                else et.background = origBg[et]
+                counts[k]?.text = et.text.length.toString()
+            }
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+        })
+    }
+
+    /** True when anything on screen differs from what the file holds. */
+    private fun isDirty(): Boolean {
+        if (coverChanged || coverRemoved) return true
+        if (filenameInput.text.toString() != origValue("filename")) return true
+        for (k in fieldKeys) if ((inputs[k]?.text?.toString() ?: "") != origValue(k)) return true
+        if ((lyricsInput?.text?.toString() ?: "") != original.lyrics) return true
+        return pendingMbIds.first != original.mbRecordingId ||
+            pendingMbIds.second != original.mbReleaseId
+    }
+
+    override fun onBackPressed() {
+        if (!savedClean && originalLoaded && isDirty()) {
+            AlertDialog.Builder(this)
+                .setMessage(Strings.t("confirm_discard"))
+                .setPositiveButton(Strings.t("discard")) { _, _ -> finish() }
+                .setNegativeButton(Strings.t("keep_editing"), null)
+                .show()
+        } else super.onBackPressed()
+    }
+
+    /** Small decoded preview of a cover (display only). */
+    private fun decodePreview(bytes: ByteArray): android.graphics.Bitmap? = try {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sample = 1
+        while (bounds.outWidth / sample > 512 || bounds.outHeight / sample > 512) sample *= 2
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
+            BitmapFactory.Options().apply { inSampleSize = sample })
+    } catch (e: Exception) { null }
+
+    /** Zooms the file's own cover, reading its bytes only now. */
+    private fun zoomFileCover() {
+        val it = item ?: return
+        thread {
+            val cover = try {
+                SafStore.ensureLocal(this, it)
+                TagService.read(it.local!!).cover
+            } catch (e: Exception) { null }
+            runOnUiThread { if (cover != null) showCoverZoom(cover) else pickImage() }
+        }
+    }
+
+    /** Pastes a cover image from the clipboard, when one is there. */
+    private fun pasteCoverFromClipboard() {
+        val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+            as android.content.ClipboardManager
+        val uri = cm.primaryClip?.getItemAt(0)?.uri
+        if (uri == null) {
+            Toast.makeText(this, Strings.t("failed"), Toast.LENGTH_SHORT).show()
+            return
+        }
+        thread {
+            try {
+                val raw = contentResolver.openInputStream(uri)?.readBytes()
+                    ?: throw IllegalStateException("clipboard image unreadable")
+                val normalized = SafStore.normalizeCoverBytes(raw)
+                runOnUiThread {
+                    coverBytes = normalized; coverRemoved = false; coverChanged = true
+                    coverPreview = decodePreview(normalized)
+                    coverView.setImageBitmap(coverPreview)
+                }
+            } catch (e: Exception) {
+                runOnUiThread { Ui.failDialog(this, "${e.javaClass.simpleName}: ${e.message}") }
+            }
+        }
+    }
+
+    /**
+     * Fetches lyrics from every source in parallel. When more than one
+     * source has lyrics, the user compares the first lines and picks;
+     * the picked text is tidied (blank lines, trailing spaces) on the way in.
      */
     private fun fetchLyrics() {
         val title = inputs["title"]?.text?.toString() ?: ""
@@ -245,36 +430,66 @@ class EditActivity : Activity() {
         getSharedPreferences("ototag", MODE_PRIVATE).edit()
             .putString("mxm_key", key).apply()
         thread {
-            val entry = try {
-                LrclibClient.fetchBest(title, artist, album, dur)
-            } catch (e: Exception) { null }
-            var text: String? = entry?.plainLyrics
-            // LRCLIB's timestamped lyrics also land next to the file as .lrc
-            var lrcSaved = false
-            val it = item
-            if (entry != null && entry.syncedLyrics.isNotBlank() && it != null) {
-                lrcSaved = SafStore.saveLrc(this, it, entry.syncedLyrics)
-            }
-            if (text == null) {
-                text = LyricsOvhClient.fetchLyrics(artist, title)
-            }
-            if (text == null && key.isNotBlank()) {
-                text = try {
+            var entry: LrcEntry? = null
+            var ovh: String? = null
+            var mxm: String? = null
+            val jobs = ArrayList<Thread>()
+            jobs.add(thread {
+                entry = try { LrclibClient.fetchBest(title, artist, album, dur) }
+                    catch (e: Exception) { null }
+            })
+            jobs.add(thread {
+                ovh = try { LyricsOvhClient.fetchLyrics(artist, title) }
+                    catch (e: Exception) { null }
+            })
+            if (key.isNotBlank()) jobs.add(thread {
+                mxm = try {
                     MusixmatchClient.apiKey = key
                     MusixmatchClient.fetchLyrics(title, artist)
                 } catch (e: Exception) { null }
-            }
-            val found = text
+            })
+            jobs.forEach { it.join() }
+            val results = ArrayList<Pair<String, String>>()
+            entry?.plainLyrics?.takeIf { it.isNotBlank() }?.let { results.add("LRCLIB" to it) }
+            ovh?.takeIf { it.isNotBlank() }?.let { results.add("Lyrics.ovh" to it) }
+            mxm?.takeIf { it.isNotBlank() }?.let { results.add("Musixmatch" to it) }
+            val lrc = entry
             runOnUiThread {
-                if (found != null) {
-                    lyricsInput?.setText(found)
-                    Toast.makeText(this,
-                        Strings.t(if (lrcSaved) "lrc_saved" else "done"),
-                        Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(this, Strings.t("no_lyrics"), Toast.LENGTH_LONG).show()
+                when {
+                    results.isEmpty() ->
+                        Toast.makeText(this, Strings.t("no_lyrics"), Toast.LENGTH_LONG).show()
+                    results.size == 1 -> applyLyrics(results[0], lrc)
+                    else -> {
+                        val labels = results.map { (srcName, txt) ->
+                            srcName + "\n" + (txt.lineSequence()
+                                .firstOrNull { it.isNotBlank() }?.take(40) ?: "")
+                        }.toTypedArray()
+                        AlertDialog.Builder(this)
+                            .setTitle(Strings.t("lyrics_pick"))
+                            .setItems(labels) { _, which -> applyLyrics(results[which], lrc) }
+                            .setNegativeButton(Strings.t("cancel"), null)
+                            .show()
+                    }
                 }
             }
+        }
+    }
+
+    /** Puts picked lyrics into the box (tidied) and saves LRCLIB's .lrc. */
+    private fun applyLyrics(picked: Pair<String, String>, lrc: LrcEntry?) {
+        lyricsInput?.setText(LyricsText.normalize(picked.second))
+        val it = item
+        if (picked.first == "LRCLIB" && lrc != null && lrc.syncedLyrics.isNotBlank() && it != null) {
+            thread {
+                val saved = SafStore.saveLrc(this, it, lrc.syncedLyrics)
+                runOnUiThread {
+                    Toast.makeText(this,
+                        Strings.t(if (saved) "lrc_saved" else "done"),
+                        Toast.LENGTH_SHORT).show()
+                }
+            }
+        } else {
+            Toast.makeText(this, Strings.t("done"), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -340,8 +555,8 @@ class EditActivity : Activity() {
                         val normalized = SafStore.normalizeCoverBytes(raw)
                         runOnUiThread {
                             coverBytes = normalized; coverRemoved = false; coverChanged = true
-                            coverView.setImageBitmap(
-                                BitmapFactory.decodeByteArray(normalized, 0, normalized.size))
+                            coverPreview = decodePreview(normalized)
+                            coverView.setImageBitmap(coverPreview)
                         }
                     } catch (e: Exception) {
                         runOnUiThread {
@@ -368,7 +583,8 @@ class EditActivity : Activity() {
             try {
                 coverBytes = SafStore.normalizeCover(this, uri)
                 coverRemoved = false; coverChanged = true
-                coverBytes?.let { coverView.setImageBitmap(BitmapFactory.decodeByteArray(it, 0, it.size)) }
+                coverPreview = coverBytes?.let { decodePreview(it) }
+                coverView.setImageBitmap(coverPreview)
             } catch (e: Exception) { }
         }
     }
@@ -383,15 +599,34 @@ class EditActivity : Activity() {
                 getSharedPreferences("ototag", MODE_PRIVATE).getInt("cover_cap", 0)))
         else collected
         val newBase = Renamer.sanitize(filenameInput.text.toString())
+        // Pre-save preview: the same change list the search flow shows.
+        val lines = ArrayList(TagDiff.lines(original, d))
+        val nameChanges = newBase.isNotBlank() && newBase != it.name.substringBeforeLast('.')
+        if (nameChanges)
+            lines.add("${Strings.t("filename")}: ${it.name} → $newBase.${it.ext}")
+        if (lines.isEmpty()) { doSave(it, d, newBase); return }
+        AlertDialog.Builder(this)
+            .setTitle(Strings.t("diff_title"))
+            .setMessage(lines.joinToString("\n"))
+            .setPositiveButton(Strings.t("apply")) { _, _ -> doSave(it, d, newBase) }
+            .setNegativeButton(Strings.t("cancel"), null)
+            .show()
+    }
+
+    private fun doSave(it: Item, d: TagData, newBase: String) {
         Toast.makeText(this, Strings.t("working"), Toast.LENGTH_SHORT).show()
         thread {
             var err: String? = null
             try {
                 SafStore.ensureLocal(this, it)
+                // An untouched cover is re-read from the file now: the
+                // editor only ever held a small preview of it.
+                val toWrite = if (!coverChanged && !coverRemoved)
+                    d.copy(cover = TagService.read(it.local!!).cover) else d
                 Backup.backup(it.local!!, SafStore.backupDir(this))
-                TagService.write(it.local!!, d)
+                TagService.write(it.local!!, toWrite)
                 SafStore.writeBack(this, it)
-                if (!SafStore.verify(this, it, d.cover != null)) {
+                if (!SafStore.verify(this, it, toWrite.cover != null)) {
                     throw IllegalStateException("verify failed after write-back")
                 }
                 it.setTagLight(TagService.read(it.local!!))
@@ -399,11 +634,15 @@ class EditActivity : Activity() {
                     val newName = newBase + "." + it.ext
                     if (!SafStore.rename(this, it, newName)) err = "rename failed: $newName"
                 }
+                // The edit is done and written back: the working copy
+                // has served its purpose and is dropped right away.
+                if (err == null) SafStore.discardCopy(it)
             } catch (e: Exception) {
                 err = "${e.javaClass.simpleName}: ${e.message}"
             }
             runOnUiThread {
                 if (err == null) {
+                    savedClean = true
                     it.checked = false // acted on: drop the check in the list
                     Toast.makeText(this, Strings.t("done"), Toast.LENGTH_LONG).show()
                     setResult(RESULT_OK)

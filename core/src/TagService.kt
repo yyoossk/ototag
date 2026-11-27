@@ -100,7 +100,11 @@ object TagService {
             d.mbRecordingId = t.first(FieldKey.MUSICBRAINZ_TRACK_ID) ?: ""
             d.mbReleaseId = t.first(FieldKey.MUSICBRAINZ_RELEASEID) ?: ""
             val arts = t.artworks
-            if (arts.isNotEmpty()) d.cover = arts[0].data
+            if (arts.isNotEmpty()) {
+                d.cover = arts[0].data
+                val (_, w, h) = imageInfo(d.cover!!)
+                d.coverW = w; d.coverH = h
+            }
         }
         // MP3 workaround: the library writes the recording MBID into a UFID frame
         // with an empty owner, which its own reader then refuses to return.
@@ -257,12 +261,27 @@ object Backup {
         // Snapshot the tags; if the tags cannot be read at all, fall
         // back to a whole-file copy so the file stays protected.
         val tag = try { TagService.read(file) } catch (e: Exception) { null }
-        if (tag != null) writeSnapshot(dst, tag)
+        if (tag != null) {
+            // The cover is the bulky part of a snapshot. When the newest
+            // existing snapshot already holds the very same cover, the
+            // new one stores a reference to it instead of a second copy.
+            var coverRef: String? = null
+            val cover = tag.cover
+            if (cover != null) {
+                val prev = (dir.listFiles() ?: emptyArray())
+                    .filter { it.isFile && isSnapshot(it) }.maxByOrNull { it.name }
+                if (prev != null) {
+                    val prevCover = try { readSnapshotFull(prev)?.cover } catch (e: Exception) { null }
+                    if (prevCover != null && prevCover.contentEquals(cover)) coverRef = prev.name
+                }
+            }
+            writeSnapshot(dst, tag, coverRef)
+        }
         else file.copyTo(dst, overwrite = false)
         return dst
     }
 
-    private fun writeSnapshot(dst: File, tag: TagData) {
+    private fun writeSnapshot(dst: File, tag: TagData, coverRef: String? = null) {
         DataOutputStream(FileOutputStream(dst).buffered()).use { out ->
             out.write(MAGIC)
             fun field(s: String) {
@@ -274,7 +293,8 @@ object Backup {
             field(tag.trackTotal); field(tag.disc); field(tag.discTotal); field(tag.comment)
             field(tag.isrc); field(tag.lyrics); field(tag.mbRecordingId); field(tag.mbReleaseId)
             val cover = tag.cover
-            if (cover == null) out.writeInt(-1)
+            if (coverRef != null) { out.writeInt(-2); field(coverRef) }
+            else if (cover == null) out.writeInt(-1)
             else { out.writeInt(cover.size); out.write(cover) }
         }
     }
@@ -286,7 +306,8 @@ object Backup {
         }
     } catch (e: Exception) { false }
 
-    private fun readSnapshot(f: File): TagData? = try {
+    /** Parses one snapshot; the second value is the cover-reference file name, if any. */
+    private fun parseSnapshot(f: File): Pair<TagData, String?>? = try {
         DataInputStream(FileInputStream(f).buffered()).use { inp ->
             val magic = ByteArray(5); inp.readFully(magic)
             if (!magic.contentEquals(MAGIC)) return null
@@ -301,19 +322,46 @@ object Backup {
                 trackTotal = field(), disc = field(), discTotal = field(), comment = field(),
                 isrc = field(), lyrics = field(), mbRecordingId = field(), mbReleaseId = field()
             )
+            var ref: String? = null
             val cn = inp.readInt()
             if (cn >= 0) {
                 val b = ByteArray(cn); inp.readFully(b)
                 t.cover = b
+                val (_, w, h) = TagService.imageInfo(b)
+                t.coverW = w; t.coverH = h
+            } else if (cn == -2) {
+                ref = field()
             }
-            t
+            t to ref
         }
     } catch (e: Exception) { null }
+
+    private fun readSnapshot(f: File): TagData? = parseSnapshot(f)?.first
+
+    /** Parses one snapshot and resolves a cover reference against its siblings. */
+    private fun readSnapshotFull(f: File): TagData? {
+        val (tag, ref) = parseSnapshot(f) ?: return null
+        if (ref == null) return tag
+        val seen = HashSet<String>()
+        var name: String? = ref
+        var hops = 0
+        while (name != null && hops < 32 && seen.add(name)) {
+            val sib = File(f.parentFile, name)
+            if (!sib.isFile) return tag
+            val (sibTag, sibRef) = parseSnapshot(sib) ?: return tag
+            if (sibTag.cover != null) {
+                tag.cover = sibTag.cover; tag.coverW = sibTag.coverW; tag.coverH = sibTag.coverH
+                return tag
+            }
+            name = sibRef; hops++
+        }
+        return tag
+    }
 
     /** Applies one backup file to [file]: snapshot → write its tags; legacy → copy back. */
     private fun applyBackup(b: File, file: File): Boolean {
         if (isSnapshot(b)) {
-            val snap = readSnapshot(b) ?: return false
+            val snap = readSnapshotFull(b) ?: return false
             TagService.write(file, snap)
             return true
         }
@@ -394,15 +442,29 @@ object Backup {
         return n
     }
 
-    fun prune(backupDir: File, keepPerFile: Int = 3): Int {
+    fun prune(backupDir: File, keepPerFile: Int = 1): Int {
         if (!backupDir.isDirectory) return 0
         var deleted = 0
         for (dir in backupDir.listFiles() ?: emptyArray()) {
             if (!dir.isDirectory) continue
             val files = (dir.listFiles() ?: emptyArray())
                 .filter { it.isFile }.sortedByDescending { it.name }
-            for (f in files.drop(keepPerFile)) {
-                if (f.delete()) deleted++
+            val keep = HashSet<String>()
+            for (f in files.take(keepPerFile)) {
+                keep.add(f.name)
+                // A kept snapshot may borrow its cover from an older one;
+                // that file (and its own chain) must survive too.
+                var cur: File? = f
+                var hops = 0
+                while (cur != null && hops < 32) {
+                    val ref = try { parseSnapshot(cur)?.second } catch (e: Exception) { null }
+                        ?: break
+                    if (!keep.add(ref)) break
+                    cur = File(dir, ref); hops++
+                }
+            }
+            for (f in files) {
+                if (f.name !in keep && f.delete()) deleted++
             }
             if ((dir.listFiles() ?: emptyArray()).isEmpty()) dir.delete()
         }

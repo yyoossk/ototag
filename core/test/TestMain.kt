@@ -460,6 +460,62 @@ fun main() {
         song.delete()
     }
 
+    // --- backup: cover dedupe, prune keeps 1, cover dims, text utils ---
+    run {
+        val bdir = File("testwork/dedupebackups"); bdir.deleteRecursively()
+        val src = File("../spike/audio/test.mp3")
+        val song = File("testwork/dedupe-song.mp3"); src.copyTo(song, overwrite = true)
+        val coverBytes = File("testdata/tiny.png").readBytes()
+        TagService.write(song, TagService.read(song).copy(
+            title = "タイトルA", cover = coverBytes))
+        val withCover = TagService.read(song)
+        check("cover dims", withCover.coverW == 1 && withCover.coverH == 1,
+            "${withCover.coverW}x${withCover.coverH}")
+        val snap1 = Backup.backup(song, bdir)
+        TagService.write(song, TagService.read(song).copy(title = "タイトルB"))
+        val snap2 = Backup.backup(song, bdir)
+        fun containsSub(hay: ByteArray, needle: ByteArray): Boolean {
+            if (needle.isEmpty() || hay.size < needle.size) return false
+            outer@ for (i in 0..hay.size - needle.size) {
+                for (j in needle.indices) if (hay[i + j] != needle[j]) continue@outer
+                return true
+            }
+            return false
+        }
+        check("first snapshot holds cover", containsSub(snap1.readBytes(), coverBytes))
+        check("second snapshot borrows cover", !containsSub(snap2.readBytes(), coverBytes) &&
+            snap2.length() < snap1.length(), "${snap2.length()} vs ${snap1.length()}")
+        TagService.write(song, TagService.read(song).copy(title = "タイトルC", cover = null))
+        check("dedupe restore ok", Backup.restore(song, bdir))
+        val restored = TagService.read(song)
+        check("dedupe restore values", restored.title == "タイトルB" &&
+            (restored.cover?.size ?: -1) == coverBytes.size,
+            "title=${restored.title} cover=${restored.cover?.size}")
+        Backup.prune(bdir)
+        check("prune keeps cover chain", snap1.exists() && snap2.exists() &&
+            Backup.generations(song, bdir).size == 2)
+        check("restore after prune", Backup.restore(song, bdir) &&
+            TagService.read(song).cover != null)
+        // Plain prune: with no cover references only the newest survives.
+        val pdir = File("testwork/prune1"); pdir.deleteRecursively()
+        val txt = File("testwork/prune1.txt"); txt.writeText("x")
+        Backup.backup(txt, pdir); Thread.sleep(5)
+        Backup.backup(txt, pdir); Thread.sleep(5)
+        Backup.backup(txt, pdir)
+        Backup.prune(pdir)
+        check("prune default keeps 1", Backup.generations(txt, pdir).size == 1,
+            Backup.generations(txt, pdir).toString())
+        check("lyrics normalize", LyricsText.normalize("a\r\n\r\n\r\nb  \n\n") == "a\n\nb",
+            LyricsText.normalize("a\r\n\r\n\r\nb  \n\n").replace("\n", "|"))
+        check("query normalize", SearchText.normalizeQuery("Ｌｅｍｏｎ　 米津 ") == "lemon 米津",
+            SearchText.normalizeQuery("Ｌｅｍｏｎ　 米津 "))
+        check("new strings", Strings.t("help_title") == "使い方" &&
+            Strings.t("include_subfolders") == "サブフォルダも含める" &&
+            Strings.t("from_clipboard") == "クリップボードから" &&
+            Strings.t("back_to_top") == "先頭へ")
+        song.delete(); txt.delete()
+    }
+
     println(if (failures == 0) "ALL PASS" else "FAILURES: $failures")
     kotlin.system.exitProcess(if (failures == 0) 0 else 1)
 }

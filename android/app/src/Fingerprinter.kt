@@ -8,7 +8,16 @@ import java.nio.ByteOrder
 
 /** JNI bridge to the bundled libchromaprint (see app/jni/fp_jni.cpp). */
 object FpNative {
-    init { System.loadLibrary("otofp") }
+    @Volatile private var loaded = false
+
+    /** The native library loads only when a fingerprint is really computed. */
+    fun ensureLoaded() {
+        if (loaded) return
+        synchronized(this) {
+            if (!loaded) { System.loadLibrary("otofp"); loaded = true }
+        }
+    }
+
     external fun start(sampleRate: Int, channels: Int): Boolean
     external fun feed(data: ShortArray)
     external fun finish(): String?
@@ -22,6 +31,7 @@ object FpNative {
  */
 object Fingerprinter {
     fun fingerprint(file: File): Pair<String, Int>? {
+        try { FpNative.ensureLoaded() } catch (e: Exception) { return null }
         val ex = MediaExtractor()
         var codec: MediaCodec? = null
         try {

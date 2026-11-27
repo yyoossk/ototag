@@ -18,6 +18,10 @@ class Item(
     val ext: String get() = name.substringAfterLast('.', "").lowercase()
     /** Folder document (tree picks only) — lets us create sibling files like .lrc. */
     var parentUri: Uri? = null
+    /** Display name of the containing folder ("" for the tree root / single picks). */
+    var folder: String = ""
+    /** A sibling "<name>.lrc" file exists next to this song. */
+    var hasLrc: Boolean = false
     /** Document last-modified time (for the "recently updated" sort). */
     var lastModified: Long = 0
     var thumb: android.graphics.Bitmap? = null
@@ -91,19 +95,39 @@ object Items {
  * again when scrolled back to).
  */
 object ThumbCache {
-    private const val MAX = 48
-    private val lru = object : LinkedHashMap<Item, Unit>(64, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Item, Unit>): Boolean {
-            if (size > MAX) {
-                eldest.key.thumb = null
-                eldest.key.thumbFor = 0
-                return true
-            }
-            return false
-        }
+    /** Cap on decoded thumbnails; adapted to the device's memory class at startup. */
+    var max: Int = 48
+    /** Centre of the visible window; eviction drops the farthest rows first. */
+    @Volatile var centerPos: Int = 0
+    private val lru = LinkedHashMap<Item, Unit>(64)
+
+    fun init(ctx: Context) {
+        val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+        val mc = am?.memoryClass ?: 128
+        max = when { mc >= 256 -> 64; mc >= 128 -> 48; else -> 32 }
     }
 
-    @Synchronized fun touch(item: Item) { lru[item] = Unit }
+    @Synchronized fun touch(item: Item) {
+        lru.remove(item); lru[item] = Unit
+        if (lru.size <= max) return
+        // Evict the thumbnails whose rows are farthest from what is on
+        // screen; they simply decode again if the user scrolls back.
+        val pos = HashMap<Item, Int>(Items.list.size)
+        Items.list.forEachIndexed { i, it -> pos[it] = i }
+        while (lru.size > max) {
+            var victim: Item? = null
+            var victimDist = -1
+            for (k in lru.keys) {
+                if (k === item) continue
+                val idx = pos[k]
+                val dist = if (idx == null) Int.MAX_VALUE else kotlin.math.abs(idx - centerPos)
+                if (dist > victimDist) { victimDist = dist; victim = k }
+            }
+            val v = victim ?: break
+            lru.remove(v)
+            v.thumb = null; v.thumbFor = 0
+        }
+    }
     @Synchronized fun forget(item: Item) { lru.remove(item) }
 }
 
@@ -206,22 +230,70 @@ object SafStore {
         return out.toByteArray()
     }
 
+    /** Deletes the transient working copy of an item (re-copied on demand). */
+    fun discardCopy(item: Item) {
+        try { item.local?.delete() } catch (e: Exception) { }
+        item.local = null
+    }
+
     /**
      * Saves synced lyrics as a sibling "<name>.lrc" document (tree picks
-     * only — a single-file pick gives no writable parent). Returns true
-     * when the file was written.
+     * only — a single-file pick gives no writable parent). An existing
+     * .lrc is overwritten in place; one that already holds the same
+     * content is left untouched. Returns true when the file is in place.
      */
     fun saveLrc(ctx: Context, item: Item, synced: String): Boolean {
         val parent = item.parentUri ?: return false
         if (synced.isBlank()) return false
         val lrcName = item.name.substringBeforeLast('.') + ".lrc"
         return try {
-            val uri = DocumentsContract.createDocument(
-                ctx.contentResolver, parent, "text/plain", lrcName) ?: return false
-            ctx.contentResolver.openOutputStream(uri, "wt")?.use { out ->
-                out.write(synced.toByteArray(Charsets.UTF_8))
-            } != null
+            val existing = findChild(ctx, parent, lrcName)
+            if (existing != null) {
+                val cur = ctx.contentResolver.openInputStream(existing)?.use {
+                    String(it.readBytes(), Charsets.UTF_8)
+                }
+                if (cur == synced) { item.hasLrc = true; return true }
+                ctx.contentResolver.openOutputStream(existing, "wt")?.use { out ->
+                    out.write(synced.toByteArray(Charsets.UTF_8))
+                } ?: return false
+            } else {
+                val uri = DocumentsContract.createDocument(
+                    ctx.contentResolver, parent, "text/plain", lrcName) ?: return false
+                ctx.contentResolver.openOutputStream(uri, "wt")?.use { out ->
+                    out.write(synced.toByteArray(Charsets.UTF_8))
+                } ?: return false
+            }
+            item.hasLrc = true
+            true
         } catch (e: Exception) { false }
+    }
+
+    /** Finds a direct child document of [parent] by display name, or null. */
+    private fun findChild(ctx: Context, parent: Uri, name: String): Uri? {
+        return try {
+            val parentId = DocumentsContract.getDocumentId(parent)
+            val treeId = try { DocumentsContract.getTreeDocumentId(parent) } catch (e: Exception) { null }
+            val childrenUri = if (treeId != null) {
+                val treeUri = DocumentsContract.buildTreeDocumentUri(parent.authority, treeId)
+                DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentId)
+            } else {
+                DocumentsContract.buildChildDocumentsUri(parent.authority, parentId)
+            }
+            ctx.contentResolver.query(childrenUri, arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { c ->
+                while (c.moveToNext()) {
+                    if (c.getString(1) == name) {
+                        val id = c.getString(0) ?: return null
+                        return if (treeId != null) {
+                            val treeUri = DocumentsContract.buildTreeDocumentUri(parent.authority, treeId)
+                            DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
+                        } else DocumentsContract.buildDocumentUri(parent.authority, id)
+                    }
+                }
+            }
+            null
+        } catch (e: Exception) { null }
     }
 
     fun rename(ctx: Context, item: Item, newName: String): Boolean {
@@ -238,15 +310,19 @@ object SafStore {
         } else false
     }
 
+    /** Whether tree enumeration descends into subfolders (a user setting). */
+    var includeSubfolders: Boolean = true
+
     /** Recursively lists audio documents under a tree uri (SAF). */
     fun enumerateTree(ctx: Context, treeUri: Uri): List<Item> {
         val out = mutableListOf<Item>()
         val rootId = DocumentsContract.getTreeDocumentId(treeUri)
-        walk(ctx, treeUri, rootId, out, 0)
+        walk(ctx, treeUri, rootId, out, 0, "")
         return out.sortedBy { it.name.lowercase() }
     }
 
-    private fun walk(ctx: Context, treeUri: Uri, parentId: String, out: MutableList<Item>, depth: Int) {
+    private fun walk(ctx: Context, treeUri: Uri, parentId: String,
+                     out: MutableList<Item>, depth: Int, folder: String) {
         if (depth > 8 || out.size > 2000) return
         val childUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentId)
         val cols = arrayOf(
@@ -254,20 +330,32 @@ object SafStore {
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
             DocumentsContract.Document.COLUMN_MIME_TYPE,
             DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+        // Read the whole folder first: knowing every sibling name lets us
+        // mark songs that have a sidecar .lrc, and non-audio entries are
+        // dropped here before any per-document work happens.
+        val kids = ArrayList<Triple<String, String, String>>()
+        val mods = HashMap<String, Long>()
         ctx.contentResolver.query(childUri, cols, null, null, null)?.use { c ->
             while (c.moveToNext()) {
                 val id = c.getString(0) ?: continue
                 val name = c.getString(1) ?: continue
                 val mime = c.getString(2) ?: ""
-                if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                    walk(ctx, treeUri, id, out, depth + 1)
-                } else if (name.substringAfterLast('.', "").lowercase() in AUDIO_EXTS) {
-                    val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
-                    val item = Item(docUri, name)
-                    if (!c.isNull(3)) item.lastModified = c.getLong(3)
-                    item.parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, parentId)
-                    out.add(item)
-                }
+                kids.add(Triple(id, name, mime))
+                if (!c.isNull(3)) mods[id] = c.getLong(3)
+            }
+        }
+        val names = kids.map { it.second }.toHashSet()
+        for ((id, name, mime) in kids) {
+            if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                if (includeSubfolders) walk(ctx, treeUri, id, out, depth + 1, name)
+            } else if (name.substringAfterLast('.', "").lowercase() in AUDIO_EXTS) {
+                val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
+                val item = Item(docUri, name)
+                item.folder = folder
+                item.hasLrc = (name.substringBeforeLast('.') + ".lrc") in names
+                mods[id]?.let { item.lastModified = it }
+                item.parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, parentId)
+                out.add(item)
             }
         }
     }

@@ -49,10 +49,10 @@ object SearchFlow {
         onPicked: (TagData) -> Unit
     ) {
         // The user can type / edit the search words before the search runs.
-        val autoQuery = listOfNotNull(
+        val autoQuery = com.yyoo.ototag.core.SearchText.normalizeQuery(listOfNotNull(
             tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title,
             tag?.artist?.takeIf { it.isNotBlank() } ?: parsed?.artist
-        ).joinToString(" ").trim()
+        ).joinToString(" "))
         val pad = (20 * activity.resources.displayMetrics.density).toInt()
         val input = android.widget.EditText(activity).apply {
             setText(autoQuery)
@@ -60,18 +60,48 @@ object SearchFlow {
             hint = Strings.t("enter_query")
             setSingleLine(true)
         }
-        val wrap = android.widget.FrameLayout(activity).apply {
+        // Detailed search: title and artist as separate fields (MusicBrainz
+        // gets a fielded query; the other sources get the combined words).
+        val detailTitle = android.widget.EditText(activity).apply {
+            hint = Strings.t("title"); setSingleLine(true)
+            visibility = android.view.View.GONE
+        }
+        val detailArtist = android.widget.EditText(activity).apply {
+            hint = Strings.t("artist"); setSingleLine(true)
+            visibility = android.view.View.GONE
+        }
+        val detailBox = android.widget.CheckBox(activity).apply {
+            text = Strings.t("detailed_search")
+            setOnCheckedChangeListener { _, on ->
+                val v = if (on) android.view.View.VISIBLE else android.view.View.GONE
+                detailTitle.visibility = v; detailArtist.visibility = v
+            }
+        }
+        val wrap = android.widget.LinearLayout(activity).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
             setPadding(pad, pad / 2, pad, 0)
-            addView(input)
+            addView(input); addView(detailBox); addView(detailTitle); addView(detailArtist)
         }
         AlertDialog.Builder(activity)
             .setTitle(Strings.t("enter_query"))
             .setView(wrap)
             .setPositiveButton(Strings.t("search")) { _, _ ->
-                val q = input.text.toString().trim()
-                if (q.isBlank()) { onStop?.invoke() }
-                else runSearch(activity, tag, parsed, localFile, q, q == autoQuery,
-                    progressLabel, onSkip, onStop, bulk, onPicked)
+                if (detailBox.isChecked) {
+                    val dt = com.yyoo.ototag.core.SearchText.normalizeQuery(detailTitle.text.toString())
+                    val da = com.yyoo.ototag.core.SearchText.normalizeQuery(detailArtist.text.toString())
+                    if (dt.isBlank() && da.isBlank()) { onStop?.invoke() }
+                    else runSearch(activity, tag, parsed, localFile,
+                        listOf(dt, da).filter { it.isNotBlank() }.joinToString(" "),
+                        false, progressLabel, onSkip, onStop, bulk, onPicked,
+                        detail = dt to da)
+                } else {
+                    // Width/case differences in the typed words are folded
+                    // away, so 「Ｌｅｍｏｎ」 and "lemon" search the same.
+                    val q = com.yyoo.ototag.core.SearchText.normalizeQuery(input.text.toString())
+                    if (q.isBlank()) { onStop?.invoke() }
+                    else runSearch(activity, tag, parsed, localFile, q, q == autoQuery,
+                        progressLabel, onSkip, onStop, bulk, onPicked)
+                }
             }
             .setNegativeButton(Strings.t("cancel")) { _, _ -> onStop?.invoke() }
             .show()
@@ -88,8 +118,11 @@ object SearchFlow {
         onSkip: (() -> Unit)?,
         onStop: (() -> Unit)?,
         bulk: Boolean,
-        onPicked: (TagData) -> Unit
+        onPicked: (TagData) -> Unit,
+        detail: Pair<String, String>? = null
     ) {
+        val trackKey = localFile?.name
+            ?: ((tag?.title ?: parsed?.title ?: "") + "|" + (tag?.artist ?: parsed?.artist ?: ""))
         val stopped = AtomicBoolean(false)
         val progress = showProgress(activity, Strings.t("searching"), progressLabel) {
             stopped.set(true)
@@ -110,7 +143,10 @@ object SearchFlow {
             val jobs = ArrayList<Thread>()
             if (com.yyoo.ototag.core.SearchSources.mb) jobs.add(thread {
                 try {
-                    if (!auto) {
+                    if (detail != null) {
+                        for (c in MbClient.searchByTagsOrName(detail.first, detail.second, ""))
+                            synchronized(found) { found.putIfAbsent(c.recordingId, c) }
+                    } else if (!auto) {
                         for (c in MbClient.searchFreeText(query))
                             synchronized(found) { found.putIfAbsent(c.recordingId, c) }
                     } else {
@@ -272,7 +308,7 @@ object SearchFlow {
                     activity.runOnUiThread {
                         if (!stopped.get()) {
                             progress.dismiss()
-                            appendFn = openChooser(activity, tag, initial, onSkip, bulk, onPicked)
+                            appendFn = openChooser(activity, tag, initial, onSkip, bulk, onPicked, trackKey)
                         }
                         latch.countDown()
                     }
@@ -373,7 +409,8 @@ object SearchFlow {
     }
 
     /** One candidate row: cover thumbnail, big title, smaller artist/album line. */
-    private class Opt(val title: String, val sub: String, val iconUrl: String?, val build: () -> TagData)
+    private class Opt(val title: String, var sub: String, val iconUrl: String?,
+                      val key: String, val build: () -> TagData)
 
     // Candidate cover thumbnails: cached for the whole session and decoded
     // at thumbnail size, so reopening a search shows them instantly. The
@@ -396,6 +433,12 @@ object SearchFlow {
         .replace("600x600bb.jpg", "100x100bb.jpg")
         .replace("1000x1000", "150x150")
         .replace("front-250", "front-120")
+
+    /** Folder changed: the session caches tied to the old folder are dropped. */
+    fun onFolderChanged() {
+        iconCache.clear()
+        com.yyoo.ototag.core.SearchCache.clear()
+    }
 
     private val iconGate = java.util.concurrent.Semaphore(6)
 
@@ -445,7 +488,7 @@ object SearchFlow {
         // Fingerprint matches first: they identify this exact recording.
         for (c in fp) {
             if (c.releases.isEmpty()) {
-                options.add(Opt(c.title, "${c.artist} · AcoustID", null) {
+                options.add(Opt(c.title, "${c.artist} · AcoustID", null, "fp|${c.recordingId}|") {
                     TagData(title = c.title, artist = c.artist, mbRecordingId = c.recordingId)
                 })
             }
@@ -453,21 +496,21 @@ object SearchFlow {
                 val yr = r.date.take(4)
                 val meta = listOf(yr, r.country).filter { it.isNotBlank() }.joinToString(", ")
                 options.add(Opt(c.title, "${c.artist} — ${r.title} ($meta) · AcoustID",
-                    thumbUrl(MbClient.coverUrl(r.id))) {
+                    thumbUrl(MbClient.coverUrl(r.id)), "fp|${c.recordingId}|${r.id}") {
                     MbClient.buildTag(c, r)
                 })
             }
         }
         for (c in mb) {
             if (c.releases.isEmpty()) {
-                options.add(Opt(c.title, c.artist, null) {
+                options.add(Opt(c.title, c.artist, null, "mb|${c.recordingId}|") {
                     TagData(title = c.title, artist = c.artist, mbRecordingId = c.recordingId)
                 })
             }
             for (r in c.releases) {
                 val yr = r.date.take(4)
                 val meta = listOf(yr, r.country).filter { it.isNotBlank() }.joinToString(", ")
-                options.add(Opt(c.title, "${c.artist} — ${r.title} ($meta)", thumbUrl(MbClient.coverUrl(r.id))) {
+                options.add(Opt(c.title, "${c.artist} — ${r.title} ($meta)", thumbUrl(MbClient.coverUrl(r.id)), "mb|${c.recordingId}|${r.id}") {
                     MbClient.buildTag(c, r)
                 })
             }
@@ -479,40 +522,40 @@ object SearchFlow {
                 else -> " — ${s.anime}"
             }
             val labelPart = if (s.themeLabel.isNotBlank()) " · ${s.themeLabel}" else ""
-            options.add(Opt(s.title, "${s.artist}$animePart$labelPart · AnimeThemes", null) {
+            options.add(Opt(s.title, "${s.artist}$animePart$labelPart · AnimeThemes", null, "at|${s.title}|${s.artist}|${s.anime}") {
                 s.toTag()
             })
         }
         for (t in itunes) {
             val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
             options.add(Opt(t.title, "${t.artist} — ${t.album}$yr · iTunes",
-                t.artworkUrl.takeIf { it.isNotBlank() }?.let { thumbUrl(it) }) {
+                t.artworkUrl.takeIf { it.isNotBlank() }?.let { thumbUrl(it) }, "itunes|${t.title}|${t.artist}|${t.album}") {
                 ItunesClient.buildTag(t)
             })
         }
         for (t in deezer) {
             options.add(Opt(t.title, "${t.artist} — ${t.album} · Deezer",
-                t.coverUrl.takeIf { it.isNotBlank() }?.let { thumbUrl(it) }) {
+                t.coverUrl.takeIf { it.isNotBlank() }?.let { thumbUrl(it) }, "deezer|${t.title}|${t.artist}|${t.album}") {
                 DeezerClient.buildTag(t)
             })
         }
         for (t in vgmdb) {
             val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
             options.add(Opt(t.title, "${t.artist} — ${t.album}$yr · VGMdb",
-                t.coverThumbUrl.ifBlank { null }) {
+                t.coverThumbUrl.ifBlank { null }, "vgmdb|${t.title}|${t.artist}|${t.album}") {
                 VgmdbClient.buildTag(t)
             })
         }
         for (t in audius) {
             val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
             options.add(Opt(t.title, "${t.artist}$yr · Audius",
-                t.coverThumbUrl.ifBlank { null }) {
+                t.coverThumbUrl.ifBlank { null }, "audius|${t.title}|${t.artist}") {
                 AudiusClient.buildTag(t)
             })
         }
         for (r in ndl) {
             val yr = if (r.year.isNotBlank()) " (${r.year})" else ""
-            options.add(Opt(r.album, "${r.artist}$yr · NDL", null) {
+            options.add(Opt(r.album, "${r.artist}$yr · NDL", null, "ndl|${r.album}|${r.artist}") {
                 NdlClient.buildTag(r)
             })
         }
@@ -529,9 +572,25 @@ object SearchFlow {
         options: MutableList<Opt>,
         onSkip: (() -> Unit)?,
         bulk: Boolean,
-        onPicked: (TagData) -> Unit
+        onPicked: (TagData) -> Unit,
+        trackKey: String = ""
     ): (List<Opt>) -> Unit {
         val d = { v: Int -> (v * activity.resources.displayMetrics.density).toInt() }
+        // A candidate chosen for this same file before is offered first.
+        val prefs = activity.getSharedPreferences("ototag", android.content.Context.MODE_PRIVATE)
+        if (trackKey.isNotBlank()) {
+            val remembered = (prefs.getString("cand_memory", "") ?: "")
+                .split("\n").firstOrNull { it.startsWith(trackKey + "\t") }
+                ?.substringAfter("\t")
+            if (remembered != null) {
+                val idx = options.indexOfFirst { it.key == remembered }
+                if (idx >= 0) {
+                    val o = options.removeAt(idx)
+                    o.sub = o.sub + " · " + Strings.t("prev_choice")
+                    options.add(0, o)
+                }
+            }
+        }
         var adapterRef: android.widget.ArrayAdapter<Opt>? = null
         val refreshIcons = { activity.runOnUiThread { adapterRef?.notifyDataSetChanged() } }
         // Start fetching every candidate's cover right away, not on scroll.
@@ -564,7 +623,10 @@ object SearchFlow {
                     setTextColor(Ui.INK)
                 })
                 texts.addView(android.widget.TextView(activity).apply {
-                    text = o.sub; textSize = 13f
+                    // Candidates without any cover art say so on the row.
+                    text = if (o.iconUrl == null)
+                        o.sub + " · " + Strings.t("cand_no_cover") else o.sub
+                    textSize = 13f
                     setTextColor(Ui.SUB)
                 })
                 row.addView(texts)
@@ -584,15 +646,26 @@ object SearchFlow {
             .create()
         var picked = false
         dlg.setOnDismissListener {
+            // The chooser is gone: its cover thumbnails are not needed
+            // anymore and the memory goes back to the list.
+            iconCache.clear()
             if (!picked) onSkip?.invoke()
         }
         listView.setOnItemClickListener { _, _, which, _ ->
             picked = true
+            val chosen = options[which]
+            if (trackKey.isNotBlank()) {
+                val lines = (prefs.getString("cand_memory", "") ?: "")
+                    .split("\n").filter { it.isNotBlank() && !it.startsWith(trackKey + "\t") }
+                prefs.edit().putString("cand_memory",
+                    (listOf(trackKey + "\t" + chosen.key) + lines).take(200)
+                        .joinToString("\n")).apply()
+            }
             dlg.dismiss()
             val progress = showProgress(activity, Strings.t("working"), null, null)
             thread {
                 try {
-                    val built = options[which].build()
+                    val built = chosen.build()
                     activity.runOnUiThread {
                         progress.dismiss()
                         showDiff(activity, currentTag, built, onPicked, onSkip)
