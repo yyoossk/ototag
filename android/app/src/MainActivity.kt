@@ -2,12 +2,19 @@ package com.yyoo.ototag
 
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.DownloadManager
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.BitmapFactory
 import android.media.MediaPlayer
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.provider.DocumentsContract
+import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -53,8 +60,78 @@ class MainActivity : Activity() {
         player = null; playingItem = null
     }
 
+    // ---- self-update (GitHub releases) ----
+
+    private var updateDownloadId: Long = -1
+    private var updateProgress: AlertDialog? = null
+    private var updateReceiver: BroadcastReceiver? = null
+
+    private fun checkUpdate() {
+        thread {
+            val info = UpdateChecker.fetchLatest() ?: return@thread
+            val current = try {
+                packageManager.getPackageInfo(packageName, 0).versionName ?: ""
+            } catch (e: Exception) { "" }
+            if (!UpdateChecker.isNewer(info.tag, current) || info.androidApkUrl.isBlank()) return@thread
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                AlertDialog.Builder(this)
+                    .setTitle(Strings.t("upd_title"))
+                    .setMessage(info.tag)
+                    .setPositiveButton(Strings.t("upd_now")) { _, _ -> startUpdateDownload(info) }
+                    .setNegativeButton(Strings.t("upd_later"), null)
+                    .show()
+            }
+        }
+    }
+
+    private fun startUpdateDownload(info: UpdateInfo) {
+        if (!packageManager.canRequestPackageInstalls()) {
+            toast(Strings.t("upd_install_perm"))
+            try {
+                startActivity(Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:$packageName")))
+            } catch (e: Exception) { }
+            return
+        }
+        val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        val req = DownloadManager.Request(Uri.parse(info.androidApkUrl))
+            .setTitle("OtoTag ${info.tag}")
+            .setMimeType("application/vnd.android.package-archive")
+            .setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, "OtoTag-update.apk")
+            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
+        try { File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "OtoTag-update.apk").delete() } catch (e: Exception) { }
+        updateDownloadId = dm.enqueue(req)
+        updateProgress = AlertDialog.Builder(this)
+            .setMessage(Strings.t("upd_downloading"))
+            .setCancelable(false)
+            .show()
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1) != updateDownloadId) return
+                updateProgress?.dismiss(); updateProgress = null
+                val uri = try { dm.getUriForDownloadedFile(updateDownloadId) } catch (e: Exception) { null }
+                if (uri == null) { toast(Strings.t("upd_failed")); return }
+                val install = Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                try { startActivity(install) } catch (e: Exception) { toast(Strings.t("upd_failed")) }
+            }
+        }
+        updateReceiver = receiver
+        if (Build.VERSION.SDK_INT >= 33) {
+            registerReceiver(receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE))
+        }
+    }
+
     override fun onDestroy() {
         stopPlayer()
+        updateReceiver?.let { try { unregisterReceiver(it) } catch (e: Exception) { } }
+        updateReceiver = null
         super.onDestroy()
     }
     private val prefs by lazy { getSharedPreferences("ototag", MODE_PRIVATE) }
@@ -64,6 +141,7 @@ class MainActivity : Activity() {
         // Hide the system title bar: the graphical in-layout header is the only app name.
         actionBar?.hide()
         Strings.lang = Strings.resolve(prefs.getString("lang", null), Locale.getDefault().toLanguageTag())
+        ItunesClient.country = Locale.getDefault().country.ifBlank { "JP" }
         title = "OtoTag"
 
         val root = LinearLayout(this).apply {
@@ -189,6 +267,7 @@ class MainActivity : Activity() {
         root.addView(bar)
 
         setContentView(root)
+        checkUpdate()
 
         prefs.getString("tree", null)?.let { uriStr ->
             loadTree(Uri.parse(uriStr))

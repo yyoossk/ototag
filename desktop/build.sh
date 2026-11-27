@@ -27,6 +27,8 @@ echo "-- Kotlin (core + desktop UI)"
     $(find "$PROJ/core/src" -name '*.kt') \
     $(find "$ROOT/src" -name '*.kt')
 
+printf '%s' "$STAMP" > "$BUILD/classes/ototag-version.txt"
+
 echo "-- fat jar"
 (cd "$BUILD/classes"
  for j in $PROJ/spike/libs/jaudiotagger-kt-jvm-1.0.1.jar \

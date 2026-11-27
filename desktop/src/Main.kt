@@ -167,12 +167,22 @@ fun searchAndPick(
             if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
             else AnimeThemesClient.searchSongs(q2)
         } catch (e: Exception) { emptyList() }
+        // iTunes (Apple Music catalog) as a third source; best effort only.
+        val itunes = try {
+            val q1 = listOfNotNull(
+                tag?.title?.takeIf { it.isNotBlank() },
+                tag?.artist?.takeIf { it.isNotBlank() }).joinToString(" ")
+            val q2 = listOfNotNull(parsed?.title, parsed?.artist).joinToString(" ")
+            val first = if (q1.isNotBlank()) ItunesClient.search(q1) else emptyList()
+            if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+            else ItunesClient.search(q2)
+        } catch (e: Exception) { emptyList() }
         if (stopped.get()) return@thread
         val cands = found.values.toList()
         SwingUtilities.invokeLater {
             progress?.dispose()
             if (stopped.get()) return@invokeLater
-            if (cands.isEmpty() && atSongs.isEmpty()) {
+            if (cands.isEmpty() && atSongs.isEmpty() && itunes.isEmpty()) {
                 if (mbError != null) { info("${Strings.t("failed")}: ${mbError.message}"); onStop?.invoke() }
                 else { info(Strings.t("no_results")); onSkip?.invoke() }
                 return@invokeLater
@@ -201,6 +211,12 @@ fun searchAndPick(
                 val labelPart = if (s.themeLabel.isNotBlank()) " · ${s.themeLabel}" else ""
                 options.add("<html><b>${esc(s.title)}</b><br><font color='#666666'>${esc(s.artist)}$animePart$labelPart · AnimeThemes</font></html>" to {
                     s.toTag()
+                })
+            }
+            for (t in itunes) {
+                val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
+                options.add("<html><b>${esc(t.title)}</b><br><font color='#666666'>${esc(t.artist)} — ${esc(t.album)}$yr · iTunes</font></html>" to {
+                    ItunesClient.buildTag(t)
                 })
             }
             val list = JList(options.map { it.first }.toTypedArray()).apply {
@@ -558,9 +574,76 @@ fun undoSelected() {
     }
 }
 
+// ---- self-update (GitHub releases) ----
+
+fun appVersion(): String = try {
+    object {}.javaClass.getResourceAsStream("/ototag-version.txt")
+        ?.readBytes()?.toString(Charsets.UTF_8)?.trim() ?: ""
+} catch (e: Exception) { "" }
+
+fun checkUpdateDesktop() {
+    val current = appVersion()
+    if (current.isBlank()) return
+    thread {
+        val info = UpdateChecker.fetchLatest() ?: return@thread
+        if (!UpdateChecker.isNewer(info.tag, current) || info.windowsZipUrl.isBlank()) return@thread
+        SwingUtilities.invokeLater {
+            val pick = JOptionPane.showOptionDialog(frame, info.tag, Strings.t("upd_title"),
+                JOptionPane.DEFAULT_OPTION, JOptionPane.INFORMATION_MESSAGE, null,
+                arrayOf(Strings.t("upd_now"), Strings.t("upd_later")), Strings.t("upd_now"))
+            if (pick == 0) applyUpdateDesktop(info)
+        }
+    }
+}
+
+fun applyUpdateDesktop(info: UpdateInfo) {
+    val progress = JDialog(frame, Strings.t("upd_title"), false)
+    progress.contentPane.add(JLabel("  " + Strings.t("upd_downloading") + "  "))
+    progress.pack(); progress.setLocationRelativeTo(frame); progress.isVisible = true
+    thread {
+        try {
+            val jarFile = File(object {}.javaClass.protectionDomain.codeSource.location.toURI())
+            val appDir = jarFile.parentFile
+            val zipFile = File(appDir, "OtoTag-update.zip")
+            UpdateChecker.download(info.windowsZipUrl, zipFile)
+            val newDir = File(appDir, "update-new")
+            newDir.deleteRecursively(); newDir.mkdirs()
+            java.util.zip.ZipInputStream(zipFile.inputStream().buffered()).use { zis ->
+                while (true) {
+                    val e = zis.nextEntry ?: break
+                    if (!e.isDirectory && !e.name.startsWith("jre/")) {
+                        val out = File(newDir, e.name)
+                        if (out.canonicalPath.startsWith(newDir.canonicalPath)) {
+                            out.parentFile?.mkdirs(); out.outputStream().use { zis.copyTo(it) }
+                        }
+                    }
+                    zis.closeEntry()
+                }
+            }
+            zipFile.delete()
+            val bat = File(appDir, "apply-update.bat")
+            bat.writeText("@echo off\r\n" +
+                "timeout /t 3 /nobreak >nul\r\n" +
+                "if exist \"%~dp0OtoTag.jar.old\" del /Q \"%~dp0OtoTag.jar.old\"\r\n" +
+                "ren \"%~dp0OtoTag.jar\" OtoTag.jar.old\r\n" +
+                "xcopy /E /Y /Q \"%~dp0update-new\\*\" \"%~dp0\" >nul\r\n" +
+                "start \"\" \"%~dp0OtoTag.exe\"\r\n")
+            ProcessBuilder("cmd", "/c", "start", "/min", bat.absolutePath)
+                .directory(appDir).start()
+            kotlin.system.exitProcess(0)
+        } catch (e: Exception) {
+            SwingUtilities.invokeLater {
+                progress.dispose()
+                info("${Strings.t("upd_failed")}: ${e.message}")
+            }
+        }
+    }
+}
+
 fun main() {
     val props = loadProps()
     Strings.lang = Strings.resolve(props.getProperty("lang"), Locale.getDefault().toLanguageTag())
+    ItunesClient.country = Locale.getDefault().country.ifBlank { "JP" }
     MbClient.userAgent = "OtoTag/0.1 ( https://github.com/yyoossk/ototag )"
 
     SwingUtilities.invokeLater {
@@ -672,5 +755,6 @@ fun main() {
             }
         })
         frame.isVisible = true
+        checkUpdateDesktop()
     }
 }

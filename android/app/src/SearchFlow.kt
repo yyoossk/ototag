@@ -9,6 +9,8 @@ import android.widget.TextView
 import android.widget.Toast
 import com.yyoo.ototag.core.AnimeThemesClient
 import com.yyoo.ototag.core.AtSong
+import com.yyoo.ototag.core.ItunesClient
+import com.yyoo.ototag.core.ItunesTrack
 import com.yyoo.ototag.core.MbCandidate
 import com.yyoo.ototag.core.MbClient
 import com.yyoo.ototag.core.NameParser
@@ -65,12 +67,22 @@ object SearchFlow {
                 if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
                 else AnimeThemesClient.searchSongs(q2)
             } catch (e: Exception) { emptyList() }
+            // iTunes (Apple Music catalog) as a third source; best effort only.
+            val itunes = try {
+                val q1 = listOfNotNull(
+                    tag?.title?.takeIf { it.isNotBlank() },
+                    tag?.artist?.takeIf { it.isNotBlank() }).joinToString(" ")
+                val q2 = listOfNotNull(parsed?.title, parsed?.artist).joinToString(" ")
+                val first = if (q1.isNotBlank()) ItunesClient.search(q1) else emptyList()
+                if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+                else ItunesClient.search(q2)
+            } catch (e: Exception) { emptyList() }
             if (stopped.get()) return@thread
             val cands = found.values.toList()
             activity.runOnUiThread {
                 if (stopped.get()) return@runOnUiThread
                 progress.dismiss()
-                if (cands.isEmpty() && atSongs.isEmpty()) {
+                if (cands.isEmpty() && atSongs.isEmpty() && itunes.isEmpty()) {
                     if (mbError != null) {
                         Toast.makeText(activity, "${Strings.t("failed")}: ${mbError.message}", Toast.LENGTH_LONG).show()
                         onStop?.invoke()
@@ -78,7 +90,7 @@ object SearchFlow {
                         Toast.makeText(activity, Strings.t("no_results"), Toast.LENGTH_LONG).show()
                         onSkip?.invoke()
                     }
-                } else showChooser(activity, cands, atSongs, onSkip, onPicked)
+                } else showChooser(activity, cands, atSongs, itunes, onSkip, onPicked)
             }
         }
     }
@@ -118,6 +130,7 @@ object SearchFlow {
         activity: Activity,
         cands: List<MbCandidate>,
         atSongs: List<AtSong>,
+        itunes: List<ItunesTrack>,
         onSkip: (() -> Unit)?,
         onPicked: (TagData) -> Unit
     ) {
@@ -145,6 +158,12 @@ object SearchFlow {
             val labelPart = if (s.themeLabel.isNotBlank()) " · ${s.themeLabel}" else ""
             options.add(Opt(s.title, "${s.artist}$animePart$labelPart · AnimeThemes") {
                 s.toTag()
+            })
+        }
+        for (t in itunes) {
+            val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
+            options.add(Opt(t.title, "${t.artist} — ${t.album}$yr · iTunes") {
+                ItunesClient.buildTag(t)
             })
         }
         val d = { v: Int -> (v * activity.resources.displayMetrics.density).toInt() }

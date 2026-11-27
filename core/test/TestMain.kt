@@ -114,6 +114,37 @@ fun main() {
     val tagFromAt = idol!!.toTag()
     check("at tag mapping", tagFromAt.title == "Idol" && tagFromAt.album == "Oshi no Ko" && tagFromAt.comment == "OP1", tagFromAt.toString())
 
+    // --- iTunes Search API (real response recorded with curl) ---
+    ItunesClient.fetcher = { url ->
+        when {
+            url.contains("itunes.apple.com/search") -> File("testdata/itunes-search.json").readBytes()
+            url.contains("mzstatic.com") -> File("testdata/cover.jpg").readBytes()
+            else -> throw IllegalStateException("unexpected url $url")
+        }
+    }
+    val itu = ItunesClient.search("YOASOBI アイドル")
+    check("itunes count", itu.isNotEmpty(), itu.size.toString())
+    val idolT = itu.firstOrNull()
+    check("itunes idol fields", idolT?.title == "アイドル" && idolT?.artist == "YOASOBI" &&
+        idolT?.album == "アイドル - Single" && idolT?.year == "2023" && idolT?.genre == "J-Pop" &&
+        idolT?.track == "1", idolT.toString())
+    check("itunes artwork upgraded to 600", idolT?.artworkUrl?.contains("600x600bb.jpg") == true, idolT?.artworkUrl ?: "")
+    val itTag = ItunesClient.buildTag(idolT!!)
+    check("itunes tag + cover", itTag.title == "アイドル" && itTag.cover != null && itTag.cover!!.size > 1000 && !itTag.coverFetchFailed)
+
+    // --- self-update check (real GitHub API response recorded with curl) ---
+    UpdateChecker.fetcher = { url ->
+        if (url.contains("api.github.com")) File("testdata/gh-latest.json").readBytes()
+        else throw IllegalStateException("unexpected url $url")
+    }
+    val latest = UpdateChecker.fetchLatest()
+    check("update tag", latest?.tag == "20261127-0644", latest?.tag ?: "null")
+    check("update asset urls", latest?.androidApkUrl?.endsWith("OtoTag-Android.apk") == true &&
+        latest?.windowsZipUrl?.endsWith("OtoTag-Windows.zip") == true, latest.toString())
+    check("isNewer true", UpdateChecker.isNewer("20261127-0644", "20261127-0528"))
+    check("isNewer false (same)", !UpdateChecker.isNewer("20261127-0644", "20261127-0644"))
+    check("isNewer false (older)", !UpdateChecker.isNewer("20261127-0528", "20261127-0644"))
+
     println(if (failures == 0) "ALL PASS" else "FAILURES: $failures")
     kotlin.system.exitProcess(if (failures == 0) 0 else 1)
 }
