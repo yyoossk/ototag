@@ -143,6 +143,7 @@ fun shownRows(): List<Row> {
         1 -> filtered.sortedBy { (it.tag?.title?.ifBlank { null } ?: it.file.name).lowercase() }
         2 -> filtered.sortedBy { (it.tag?.album?.ifBlank { null } ?: it.file.name).lowercase() }
         3 -> filtered.sortedBy { (it.tag?.artist?.ifBlank { null } ?: it.file.name).lowercase() }
+        4 -> filtered.sortedByDescending { it.file.lastModified() }
         else -> filtered.sortedBy { it.file.name.lowercase() }
     }
 }
@@ -231,6 +232,7 @@ fun addFiles(files: List<File>, startChecked: Boolean = false) {
     thread {
         val found = mutableListOf<File>()
         for (f in files) collectAudio(f, found)
+        var primed = 0
         for (f in found.sortedBy { it.name.lowercase() }) {
             if (rows.any { it.file.absolutePath == f.absolutePath }) continue
             // Files added one by one start out checked; folder loads do not.
@@ -238,7 +240,9 @@ fun addFiles(files: List<File>, startChecked: Boolean = false) {
             try {
                 val full = TagService.read(f)
                 row.setTagLight(full)
-                if (full.cover != null) row.primeIcon(full.cover!!) // icon from bytes in hand
+                // Prime only the first screenful of icons; the rest
+                // decode on demand when their row scrolls into view.
+                if (full.cover != null && primed < 24) { row.primeIcon(full.cover!!); primed++ }
             } catch (e: Exception) { row.status = e.message ?: ""; row.failed = true }
             rows.add(row)
         }
@@ -1040,6 +1044,7 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
 
         val btns = JPanel()
         btns.add(JButton(Strings.t("pick_image")).apply { addActionListener { pickCoverFile() } })
+        btns.add(JButton(Strings.t("from_url")).apply { addActionListener { pickCoverUrl() } })
         btns.add(JButton(Strings.t("remove_cover")).apply {
             addActionListener { coverBytes = null; coverRemoved = true; updateCoverLabel() }
         })
@@ -1088,10 +1093,52 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
         }
     }
 
+    /** Downloads a cover image from a typed URL and uses it as the new cover. */
+    private fun pickCoverUrl() {
+        val url = JOptionPane.showInputDialog(this, Strings.t("cover_url"),
+            Strings.t("from_url"), JOptionPane.PLAIN_MESSAGE)?.trim().orEmpty()
+        if (url.isBlank()) return
+        thread {
+            try {
+                val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                conn.setRequestProperty("User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                        "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+                conn.instanceFollowRedirects = true
+                conn.connectTimeout = 10000
+                conn.readTimeout = 15000
+                val bytes = conn.inputStream.readBytes()
+                SwingUtilities.invokeLater { setCover(bytes) }
+            } catch (e: Exception) {
+                SwingUtilities.invokeLater {
+                    fail("${e.javaClass.simpleName}: ${e.message}")
+                }
+            }
+        }
+    }
+
     /** Large view of the current cover art. */
     private fun showCoverZoom() {
         val b = coverBytes ?: return
-        val img = try { ImageIO.read(b.inputStream()) } catch (e: Exception) { null } ?: return
+        // Subsampled decode near the display size (at most 620px on
+        // screen): a multi-megapixel cover must not decode whole.
+        val img = try {
+            val iis = ImageIO.createImageInputStream(b.inputStream())
+            val readers = ImageIO.getImageReaders(iis)
+            if (!readers.hasNext()) null
+            else {
+                val reader = readers.next()
+                reader.input = iis
+                val w0 = reader.getWidth(0); val h0 = reader.getHeight(0)
+                var sub = 1
+                while (w0 / sub > 1240 || h0 / sub > 1240) sub *= 2
+                val param = reader.defaultReadParam
+                if (sub > 1) param.setSourceSubsampling(sub, sub, 0, 0)
+                val im = reader.read(0, param)
+                reader.dispose()
+                im
+            }
+        } catch (e: Exception) { null } ?: return
         val maxDim = 620
         val ratio = minOf(1.0, maxDim.toDouble() / maxOf(img.width, img.height))
         val w = (img.width * ratio).toInt().coerceAtLeast(1)
@@ -1550,7 +1597,7 @@ fun main() {
         top.add(filterBox)
         val sortBox = JComboBox(arrayOf(
             Strings.t("sort_name"), Strings.t("sort_title"),
-            Strings.t("sort_album"), Strings.t("sort_artist")))
+            Strings.t("sort_album"), Strings.t("sort_artist"), Strings.t("sort_updated")))
         sortBox.selectedIndex = sortMode
         sortBox.addActionListener {
             if (sortBox.selectedIndex != sortMode) {

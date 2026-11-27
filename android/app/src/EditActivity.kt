@@ -108,6 +108,10 @@ class EditActivity : Activity() {
             text = Strings.t("remove_cover"); Ui.styleButton(this, Ui.ORANGE)
             setOnClickListener { coverBytes = null; coverRemoved = true; coverView.setImageBitmap(null) }
         })
+        coverBtns.addView(Button(this).apply {
+            text = Strings.t("from_url"); Ui.styleButton(this, Ui.TEAL)
+            setOnClickListener { promptCoverUrl() }
+        })
         root.addView(coverBtns)
 
         root.addView(TextView(this).apply { text = Strings.t("lyrics"); setTextColor(Ui.SUB) })
@@ -290,8 +294,17 @@ class EditActivity : Activity() {
 
     /** Full-screen view of the current cover art; tap anywhere to close. */
     private fun showCoverZoom(bytes: ByteArray) {
-        val bmp = try { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }
-            catch (e: Exception) { null } ?: return
+        // Decode at display size, not full size: the zoom view is at
+        // most ~1024px wide, and a multi-megapixel cover would waste
+        // a lot of memory decoded whole.
+        val bmp = try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            var sample = 1
+            while (bounds.outWidth / sample > 1024 || bounds.outHeight / sample > 1024) sample *= 2
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
+                BitmapFactory.Options().apply { inSampleSize = sample })
+        } catch (e: Exception) { null } ?: return
         val iv = ImageView(this).apply {
             setImageBitmap(bmp)
             scaleType = ImageView.ScaleType.FIT_CENTER
@@ -300,6 +313,45 @@ class EditActivity : Activity() {
         val dlg = AlertDialog.Builder(this).setView(iv).create()
         iv.setOnClickListener { dlg.dismiss() }
         dlg.show()
+    }
+
+    /** Downloads a cover image from a typed URL and uses it as the new cover. */
+    private fun promptCoverUrl() {
+        val input = EditText(this).apply {
+            hint = "https://"
+            inputType = android.text.InputType.TYPE_TEXT_VARIATION_URI
+        }
+        AlertDialog.Builder(this)
+            .setTitle(Strings.t("cover_url"))
+            .setView(input)
+            .setPositiveButton(Strings.t("ok")) { _, _ ->
+                val url = input.text.toString().trim()
+                if (url.isBlank()) return@setPositiveButton
+                thread {
+                    try {
+                        val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                        conn.setRequestProperty("User-Agent",
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                                "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+                        conn.instanceFollowRedirects = true
+                        conn.connectTimeout = 10000
+                        conn.readTimeout = 15000
+                        val raw = conn.inputStream.readBytes()
+                        val normalized = SafStore.normalizeCoverBytes(raw)
+                        runOnUiThread {
+                            coverBytes = normalized; coverRemoved = false; coverChanged = true
+                            coverView.setImageBitmap(
+                                BitmapFactory.decodeByteArray(normalized, 0, normalized.size))
+                        }
+                    } catch (e: Exception) {
+                        runOnUiThread {
+                            Ui.failDialog(this, "${e.javaClass.simpleName}: ${e.message}")
+                        }
+                    }
+                }
+            }
+            .setNegativeButton(Strings.t("cancel"), null)
+            .show()
     }
 
     private fun pickImage() {

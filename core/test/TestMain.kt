@@ -419,6 +419,9 @@ fun main() {
         Strings.lang = "ja"
         check("filter/backup strings", Strings.t("filter_error") == "エラー" &&
             Strings.t("delete_all") == "全て削除")
+        check("sort/url strings", Strings.t("sort_updated") == "更新日時順" &&
+            Strings.t("from_url") == "URLから" && Strings.t("cover_url") == "カバー画像のURL")
+        check("genre list", TagData.GENRES.size >= 20 && "J-Pop" in TagData.GENRES)
     }
 
     // --- tag-snapshot backups: undo restores tags + lyrics + cover ---

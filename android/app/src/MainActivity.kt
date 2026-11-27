@@ -34,7 +34,33 @@ class MainActivity : Activity() {
     private var filterMode: Int = 0
     /** List sort: 0 = file name, 1 = title, 2 = album, 3 = artist. */
     private var sortMode: Int = 0
-    private val thumbExecutor = java.util.concurrent.Executors.newFixedThreadPool(2)
+    // Thumbnail decoding runs on two workers fed by a priority queue:
+    // rows near the visible window decode first, so fast scrolling does
+    // not leave a backlog of stale decodes ahead of what is on screen.
+    private class ThumbTask(val rank: Int, val body: () -> Unit) : Comparable<ThumbTask> {
+        override fun compareTo(other: ThumbTask): Int = rank.compareTo(other.rank)
+    }
+    private val thumbQueue = java.util.concurrent.PriorityBlockingQueue<ThumbTask>()
+    @Volatile private var visibleCenter: Int = 0
+    @Volatile private var thumbWorkersStarted: Boolean = false
+    private fun enqueueThumb(position: Int, body: () -> Unit) {
+        if (!thumbWorkersStarted) {
+            synchronized(this) {
+                if (!thumbWorkersStarted) {
+                    thumbWorkersStarted = true
+                    repeat(2) {
+                        thread(isDaemon = true) {
+                            while (true) {
+                                val t = thumbQueue.take()
+                                try { t.body() } catch (e: Exception) { }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        thumbQueue.put(ThumbTask(kotlin.math.abs(position - visibleCenter), body))
+    }
 
     /** The items the list currently shows, after the filter and sort. */
     private fun shownItems(): List<Item> {
@@ -52,6 +78,7 @@ class MainActivity : Activity() {
             1 -> filtered.sortedBy { (it.tag?.title?.ifBlank { null } ?: it.name).lowercase() }
             2 -> filtered.sortedBy { (it.tag?.album?.ifBlank { null } ?: it.name).lowercase() }
             3 -> filtered.sortedBy { (it.tag?.artist?.ifBlank { null } ?: it.name).lowercase() }
+            4 -> filtered.sortedByDescending { it.lastModified }
             else -> filtered.sortedBy { it.name.lowercase() }
         }
     }
@@ -463,7 +490,7 @@ class MainActivity : Activity() {
         val sortSpinner = Spinner(this)
         sortSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
             listOf(Strings.t("sort_name"), Strings.t("sort_title"),
-                Strings.t("sort_album"), Strings.t("sort_artist")))
+                Strings.t("sort_album"), Strings.t("sort_artist"), Strings.t("sort_updated")))
         sortSpinner.setSelection(sortMode)
         sortSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p: AdapterView<*>, v: View?, pos: Int, id: Long) {
@@ -485,6 +512,14 @@ class MainActivity : Activity() {
             divider = null
             dividerHeight = 0
             setBackgroundColor(Ui.BG)
+            // Thumbnail decoding prioritizes the rows around this window.
+            setOnScrollListener(object : android.widget.AbsListView.OnScrollListener {
+                override fun onScroll(view: android.widget.AbsListView, first: Int,
+                    visible: Int, total: Int) {
+                    visibleCenter = first + visible / 2
+                }
+                override fun onScrollStateChanged(view: android.widget.AbsListView, state: Int) {}
+            })
         }
         root.addView(listView)
 
@@ -977,6 +1012,7 @@ class MainActivity : Activity() {
                 if (Items.list.any { it.docUri == uri }) continue
                 // Files added one by one start out checked, ready for the bulk actions.
                 val item = Item(uri, name, checked = true)
+                item.lastModified = queryLastModified(uri)
                 Items.list.add(item)
                 try {
                     SafStore.ensureLocal(this, item)
@@ -985,6 +1021,17 @@ class MainActivity : Activity() {
                 runOnUiThread { adapter.notifyDataSetChanged() }
             }
         }
+    }
+
+    private fun queryLastModified(uri: Uri): Long {
+        try {
+            contentResolver.query(uri,
+                arrayOf(DocumentsContract.Document.COLUMN_LAST_MODIFIED),
+                null, null, null)?.use { c ->
+                if (c.moveToFirst() && !c.isNull(0)) return c.getLong(0)
+            }
+        } catch (e: Exception) { }
+        return 0
     }
 
     private fun queryName(uri: Uri): String? {
@@ -1072,7 +1119,7 @@ class MainActivity : Activity() {
                         setImageBitmap(Ui.noCoverBitmap())
                         if (item.hasCover && !item.thumbLoading) {
                             item.thumbLoading = true
-                            thumbExecutor.execute {
+                            enqueueThumb(pos) {
                                 try { item.thumbnail() } catch (e: Exception) { }
                                 item.thumbLoading = false
                                 runOnUiThread { adapter.notifyDataSetChanged() }

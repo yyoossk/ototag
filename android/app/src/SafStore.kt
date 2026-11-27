@@ -18,6 +18,8 @@ class Item(
     val ext: String get() = name.substringAfterLast('.', "").lowercase()
     /** Folder document (tree picks only) — lets us create sibling files like .lrc. */
     var parentUri: Uri? = null
+    /** Document last-modified time (for the "recently updated" sort). */
+    var lastModified: Long = 0
     var thumb: android.graphics.Bitmap? = null
     var thumbFor: Int = 0
     var thumbLoading: Boolean = false
@@ -166,6 +168,11 @@ object SafStore {
     /** Decodes a picked image, caps it at 1200px and re-encodes as JPEG (design rule). */
     fun normalizeCover(ctx: Context, uri: Uri): ByteArray? {
         val bytes = ctx.contentResolver.openInputStream(uri)?.readBytes() ?: return null
+        return normalizeCoverBytes(bytes)
+    }
+
+    /** The picked-image normalization (1200px cap, JPEG) for raw bytes, e.g. a downloaded cover. */
+    fun normalizeCoverBytes(bytes: ByteArray): ByteArray {
         val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return bytes
         val maxDim = maxOf(bmp.width, bmp.height)
         val scaled = if (maxDim > 1200) {
@@ -245,7 +252,8 @@ object SafStore {
         val cols = arrayOf(
             DocumentsContract.Document.COLUMN_DOCUMENT_ID,
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-            DocumentsContract.Document.COLUMN_MIME_TYPE)
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+            DocumentsContract.Document.COLUMN_LAST_MODIFIED)
         ctx.contentResolver.query(childUri, cols, null, null, null)?.use { c ->
             while (c.moveToNext()) {
                 val id = c.getString(0) ?: continue
@@ -256,6 +264,7 @@ object SafStore {
                 } else if (name.substringAfterLast('.', "").lowercase() in AUDIO_EXTS) {
                     val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
                     val item = Item(docUri, name)
+                    if (!c.isNull(3)) item.lastModified = c.getLong(3)
                     item.parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, parentId)
                     out.add(item)
                 }
