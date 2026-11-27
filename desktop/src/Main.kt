@@ -166,6 +166,10 @@ lateinit var quickBar: JLabel
 
 /** Bumped by refresh(); keys the shown/display list caches. */
 private var listVersion = 0
+// Only the newest search may touch the screen: a superseded search
+// (its file skipped, the next one already searching) must not open a
+// chooser, append candidates into the new chooser, or fire callbacks.
+private val searchGen = java.util.concurrent.atomic.AtomicInteger(0)
 private var shownCache: List<Row>? = null
 private var shownCacheKey = ""
 private var displayCache: List<Any>? = null
@@ -581,6 +585,7 @@ fun searchAndPick(
     }
     val trackKey = localFile?.name
         ?: ((tag?.title ?: parsed?.title ?: "") + "|" + (tag?.artist ?: parsed?.artist ?: ""))
+    val myGen = searchGen.incrementAndGet()
     val stopped = java.util.concurrent.atomic.AtomicBoolean(false)
     var progress: JDialog? = null // only touched on the EDT (creation and disposal are both invokeLater)
     SwingUtilities.invokeLater {
@@ -746,15 +751,15 @@ fun searchAndPick(
                 }
             }
             val dlg = JDialog(frame, Strings.t("candidates"), true)
-            // No Skip/Cancel button: closing the window without applying
-            // counts as skipping this file.
+            // A Cancel button sits at the bottom next to Apply; closing
+            // the window without applying counts as skipping this file.
             var picked = false
             dlg.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
             dlg.addWindowListener(object : java.awt.event.WindowAdapter() {
                 override fun windowClosed(e: java.awt.event.WindowEvent) {
                     // The chooser is gone: its cover thumbnails go too.
                     iconCache.clear()
-                    if (!picked) onSkip?.invoke()
+                    if (!picked && myGen == searchGen.get()) onSkip?.invoke()
                 }
             })
             val ok = JButton(Strings.t("apply")).apply {
@@ -800,7 +805,10 @@ fun searchAndPick(
                     } else onSkip?.invoke()
                 }
             }
-            val btns = JPanel().apply { add(ok) }
+            val cancel = JButton(Strings.t("cancel")).apply {
+                addActionListener { dlg.dispose() }
+            }
+            val btns = JPanel().apply { add(ok); add(cancel) }
             dlg.contentPane.layout = BorderLayout()
             dlg.add(JScrollPane(list), BorderLayout.CENTER)
             dlg.add(btns, BorderLayout.SOUTH)
@@ -808,7 +816,7 @@ fun searchAndPick(
             // Late sources append their candidates to the open chooser.
             chooserAppend = { more ->
                 SwingUtilities.invokeLater {
-                    if (dlg.isShowing) {
+                    if (dlg.isShowing && myGen == searchGen.get()) {
                         val wasEmpty = model.size == 0
                         more.forEach { model.addElement(it) }
                         if (wasEmpty && model.size > 0) list.selectedIndex = 0
@@ -973,6 +981,7 @@ fun searchAndPick(
         val pending = ArrayList<DlgOpt>()
         while (true) {
             if (stopped.get()) return@thread
+            if (myGen != searchGen.get()) return@thread
             var allDone = delivered.size >= jobs.size
             for (i in jobs.indices) {
                 val key = jobKeys.getOrNull(i) ?: continue
@@ -1003,6 +1012,7 @@ fun searchAndPick(
             SwingUtilities.invokeLater {
                 progress?.dispose()
                 if (stopped.get()) return@invokeLater
+                if (myGen != searchGen.get()) return@invokeLater
                 if (mbError != null) { fail("${mbError.javaClass.simpleName}: ${mbError.message}"); onStop?.invoke() }
                 else {
                     // Offer narrower re-searches before giving up.
@@ -1761,7 +1771,13 @@ fun bulkRename() {
         form.add(line)
         fields.add(row to tf)
     }
+    val stripBtn = JButton(Strings.t("strip_num")).apply {
+        addActionListener {
+            for ((_, tf) in fields) tf.text = Renamer.stripTrackPrefix(tf.text)
+        }
+    }
     val panel = JPanel(BorderLayout(6, 6))
+    panel.add(JPanel().apply { add(stripBtn) }, BorderLayout.NORTH)
     panel.add(JScrollPane(form).apply { preferredSize = java.awt.Dimension(560, 320) },
         BorderLayout.CENTER)
     val res = JOptionPane.showConfirmDialog(frame, panel, Strings.t("rename"),

@@ -945,9 +945,10 @@ class MainActivity : Activity() {
             fields.add(item to et)
         }
         val scroll = android.widget.ScrollView(this).apply { addView(layout) }
-        AlertDialog.Builder(this)
+        val dlg = AlertDialog.Builder(this)
             .setTitle(Strings.t("rename"))
             .setView(scroll)
+            .setNeutralButton(Strings.t("strip_num"), null)
             .setPositiveButton(Strings.t("apply")) { _, _ ->
                 var failed = 0
                 val targets = HashSet<String>()
@@ -967,7 +968,14 @@ class MainActivity : Activity() {
                 toast(if (failed == 0) Strings.t("done") else "${Strings.t("failed")}: $failed")
             }
             .setNegativeButton(Strings.t("cancel"), null)
-            .show()
+            .create()
+        dlg.show()
+        // The strip button rewrites every field in place (a preview the
+        // user can still edit) instead of closing the dialog.
+        dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+            for ((_, et) in fields)
+                et.setText(Renamer.stripTrackPrefix(et.text.toString()))
+        }
     }
 
     private fun undoSelected() {

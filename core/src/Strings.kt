@@ -58,7 +58,7 @@ object Strings {
         "cover" to "Cover", "bulk_cover" to "Set cover for all selected",
         "rename_preview" to "Rename preview", "search" to "Search",
         "bar_edit" to "Edit", "bar_search" to "Search", "bar_bulk" to "Bulk",
-        "bar_rename" to "Rename", "bar_undo" to "Undo")
+        "strip_num" to "Remove leading number", "bar_rename" to "Rename", "bar_undo" to "Undo")
     private val ja = mapOf(
         "choose_folder" to "フォルダを選ぶ", "choose_files" to "ファイルを選ぶ",
         "edit" to "編集", "search_apply" to "検索して適用", "bulk_edit" to "一括編集",
@@ -89,7 +89,7 @@ object Strings {
         "cover" to "カバー", "bulk_cover" to "選択した全曲にカバーを設定",
         "rename_preview" to "名前変更のプレビュー", "search" to "検索",
         "bar_edit" to "編集", "bar_search" to "検索", "bar_bulk" to "一括",
-        "bar_rename" to "改名", "bar_undo" to "戻す")
+        "strip_num" to "先頭の番号を消す", "bar_rename" to "改名", "bar_undo" to "戻す")
 
     private val fr = mapOf(
         "choose_folder" to "Choisir un dossier", "choose_files" to "Choisir des fichiers",
@@ -121,7 +121,7 @@ object Strings {
         "cover" to "Pochette", "bulk_cover" to "Définir la pochette pour la sélection",
         "rename_preview" to "Aperçu du renommage", "search" to "Rechercher",
         "bar_edit" to "Éditer", "bar_search" to "Chercher", "bar_bulk" to "Groupe",
-        "bar_rename" to "Renommer", "bar_undo" to "Annuler")
+        "strip_num" to "Retirer le numéro initial", "bar_rename" to "Renommer", "bar_undo" to "Annuler")
     private val de = mapOf(
         "choose_folder" to "Ordner wählen", "choose_files" to "Dateien wählen",
         "edit" to "Bearbeiten", "search_apply" to "Suchen & übernehmen", "bulk_edit" to "Mehrere bearbeiten",
@@ -152,7 +152,7 @@ object Strings {
         "cover" to "Cover", "bulk_cover" to "Cover für alle Ausgewählten setzen",
         "rename_preview" to "Vorschau Umbenennen", "search" to "Suchen",
         "bar_edit" to "Ändern", "bar_search" to "Suchen", "bar_bulk" to "Gruppe",
-        "bar_rename" to "Umbenennen", "bar_undo" to "Rückgängig")
+        "strip_num" to "Führende Nummer entfernen", "bar_rename" to "Umbenennen", "bar_undo" to "Rückgängig")
     private val it = mapOf(
         "choose_folder" to "Scegli cartella", "choose_files" to "Scegli file",
         "edit" to "Modifica", "search_apply" to "Cerca e applica", "bulk_edit" to "Modifica multipla",
@@ -183,7 +183,7 @@ object Strings {
         "cover" to "Copertina", "bulk_cover" to "Imposta copertina per tutti i selezionati",
         "rename_preview" to "Anteprima rinomina", "search" to "Cerca",
         "bar_edit" to "Modifica", "bar_search" to "Cerca", "bar_bulk" to "Gruppo",
-        "bar_rename" to "Rinomina", "bar_undo" to "Annulla")
+        "strip_num" to "Rimuovi numero iniziale", "bar_rename" to "Rinomina", "bar_undo" to "Annulla")
     private val es = mapOf(
         "choose_folder" to "Elegir carpeta", "choose_files" to "Elegir archivos",
         "edit" to "Editar", "search_apply" to "Buscar y aplicar", "bulk_edit" to "Edición múltiple",
@@ -214,7 +214,7 @@ object Strings {
         "cover" to "Portada", "bulk_cover" to "Poner portada a todos los seleccionados",
         "rename_preview" to "Vista previa de renombrado", "search" to "Buscar",
         "bar_edit" to "Editar", "bar_search" to "Buscar", "bar_bulk" to "Grupo",
-        "bar_rename" to "Renombrar", "bar_undo" to "Deshacer")
+        "strip_num" to "Quitar número inicial", "bar_rename" to "Renombrar", "bar_undo" to "Deshacer")
     private val ru = mapOf(
         "choose_folder" to "Выбрать папку", "choose_files" to "Выбрать файлы",
         "edit" to "Изменить", "search_apply" to "Найти и применить", "bulk_edit" to "Пакетное изменение",
@@ -245,7 +245,7 @@ object Strings {
         "cover" to "Обложка", "bulk_cover" to "Обложка для всех выбранных",
         "rename_preview" to "Предпросмотр переименования", "search" to "Поиск",
         "bar_edit" to "Правка", "bar_search" to "Поиск", "bar_bulk" to "Пакет",
-        "bar_rename" to "Имя", "bar_undo" to "Отмена")
+        "strip_num" to "Убрать номер в начале", "bar_rename" to "Имя", "bar_undo" to "Отмена")
     private val pt = mapOf(
         "choose_folder" to "Escolher pasta", "choose_files" to "Escolher ficheiros",
         "edit" to "Editar", "search_apply" to "Procurar e aplicar", "bulk_edit" to "Edição em massa",
@@ -276,7 +276,7 @@ object Strings {
         "cover" to "Capa", "bulk_cover" to "Definir capa para todos os selecionados",
         "rename_preview" to "Pré-visualização de renomear", "search" to "Procurar",
         "bar_edit" to "Editar", "bar_search" to "Buscar", "bar_bulk" to "Lote",
-        "bar_rename" to "Renomear", "bar_undo" to "Desfazer")
+        "strip_num" to "Remover número inicial", "bar_rename" to "Renomear", "bar_undo" to "Desfazer")
     private val pl = mapOf(
         "choose_folder" to "Wybierz folder", "choose_files" to "Wybierz pliki",
         "edit" to "Edytuj", "search_apply" to "Szukaj i zastosuj", "bulk_edit" to "Edycja zbiorcza",
@@ -307,7 +307,7 @@ object Strings {
         "cover" to "Okładka", "bulk_cover" to "Ustaw okładkę dla wszystkich wybranych",
         "rename_preview" to "Podgląd zmiany nazwy", "search" to "Szukaj",
         "bar_edit" to "Edytuj", "bar_search" to "Szukaj", "bar_bulk" to "Wiele",
-        "bar_rename" to "Nazwa", "bar_undo" to "Cofnij")
+        "strip_num" to "Usuń numer na początku", "bar_rename" to "Nazwa", "bar_undo" to "Cofnij")
     private val ko = mapOf(
         "choose_folder" to "폴더 선택", "choose_files" to "파일 선택",
         "edit" to "편집", "search_apply" to "검색해서 적용", "bulk_edit" to "일괄 편집",
@@ -338,7 +338,7 @@ object Strings {
         "cover" to "커버", "bulk_cover" to "선택한 모든 곡에 커버 설정",
         "rename_preview" to "이름 변경 미리보기", "search" to "검색",
         "bar_edit" to "편집", "bar_search" to "검색", "bar_bulk" to "일괄",
-        "bar_rename" to "이름", "bar_undo" to "되돌리기")
+        "strip_num" to "앞 번호 지우기", "bar_rename" to "이름", "bar_undo" to "되돌리기")
     private val zhHans = mapOf(
         "choose_folder" to "选择文件夹", "choose_files" to "选择文件",
         "edit" to "编辑", "search_apply" to "搜索并应用", "bulk_edit" to "批量编辑",
@@ -369,7 +369,7 @@ object Strings {
         "cover" to "封面", "bulk_cover" to "为所选全部设置封面",
         "rename_preview" to "重命名预览", "search" to "搜索",
         "bar_edit" to "编辑", "bar_search" to "搜索", "bar_bulk" to "批量",
-        "bar_rename" to "改名", "bar_undo" to "撤销")
+        "strip_num" to "删除开头编号", "bar_rename" to "改名", "bar_undo" to "撤销")
     private val zhHant = mapOf(
         "choose_folder" to "選擇資料夾", "choose_files" to "選擇檔案",
         "edit" to "編輯", "search_apply" to "搜尋並套用", "bulk_edit" to "批次編輯",
@@ -400,7 +400,7 @@ object Strings {
         "cover" to "封面", "bulk_cover" to "為所選全部設定封面",
         "rename_preview" to "重新命名預覽", "search" to "搜尋",
         "bar_edit" to "編輯", "bar_search" to "搜尋", "bar_bulk" to "批次",
-        "bar_rename" to "改名", "bar_undo" to "復原")
+        "strip_num" to "刪除開頭編號", "bar_rename" to "改名", "bar_undo" to "復原")
 
     val MAPS: Map<String, Map<String, String>> = mapOf(
         "en" to en, "ja" to ja, "fr" to fr, "de" to de, "it" to it, "es" to es,

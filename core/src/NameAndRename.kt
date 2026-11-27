@@ -81,6 +81,28 @@ object Renamer {
         return sanitize(s)
     }
 
+    private val trackPrefix =
+        Regex("^\\d{1,3}(?:\\s*[.\\-_)\\]、。，．~:：]\\s*|\\s+)")
+
+    /**
+     * Removes a leading track-number prefix from a base file name:
+     * "01. Lemon" -> "Lemon", "02 アイドル" -> "アイドル",
+     * "01-02 Duet" -> "Duet" (two passes, for disc-track prefixes).
+     * A leading number only goes when a separator or whitespace
+     * follows it, so "24K Magic" and "2024 Song" stay untouched,
+     * and a name that is only a number is returned as it is.
+     */
+    fun stripTrackPrefix(base: String): String {
+        var s = base.trim()
+        repeat(2) {
+            val m = trackPrefix.find(s) ?: return s
+            val rest = s.substring(m.value.length).trim()
+            if (rest.isEmpty()) return s
+            s = rest
+        }
+        return s
+    }
+
     /**
      * Substitution values taken from the file name itself. Renaming only
      * ever renames the file, so the pattern works on what the name already

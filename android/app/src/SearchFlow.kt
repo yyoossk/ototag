@@ -30,6 +30,13 @@ import kotlin.concurrent.thread
 
 object SearchFlow {
 
+    // Only the newest search may touch the screen. A search that has
+    // been superseded (its file was skipped, the next file is already
+    // searching) must not open a chooser, append candidates into the
+    // new search's chooser, or fire its callbacks.
+    private val genCounter = java.util.concurrent.atomic.AtomicInteger(0)
+    @Volatile private var activeChooser: AlertDialog? = null
+
     /**
      * Searches off the UI thread while a progress dialog stays on screen the
      * whole time, until the candidate list replaces it. In a bulk run the
@@ -123,6 +130,8 @@ object SearchFlow {
     ) {
         val trackKey = localFile?.name
             ?: ((tag?.title ?: parsed?.title ?: "") + "|" + (tag?.artist ?: parsed?.artist ?: ""))
+        val myGen = genCounter.incrementAndGet()
+        activeChooser?.let { if (it.isShowing) it.dismiss() }
         val stopped = AtomicBoolean(false)
         val progress = showProgress(activity, Strings.t("searching"), progressLabel) {
             stopped.set(true)
@@ -288,6 +297,7 @@ object SearchFlow {
             val pending = ArrayList<Opt>()
             while (true) {
                 if (stopped.get()) return@thread
+                if (myGen != genCounter.get()) return@thread
                 var allDone = delivered.size >= jobs.size
                 for (i in jobs.indices) {
                     val key = jobKeys.getOrNull(i) ?: continue
@@ -306,9 +316,9 @@ object SearchFlow {
                     val initial = ArrayList(pending); pending.clear()
                     val latch = java.util.concurrent.CountDownLatch(1)
                     activity.runOnUiThread {
-                        if (!stopped.get()) {
+                        if (!stopped.get() && myGen == genCounter.get()) {
                             progress.dismiss()
-                            appendFn = openChooser(activity, tag, initial, onSkip, bulk, onPicked, trackKey)
+                            appendFn = openChooser(activity, tag, initial, onSkip, bulk, onPicked, trackKey, myGen)
                         }
                         latch.countDown()
                     }
@@ -324,6 +334,7 @@ object SearchFlow {
             if (!opened) {
                 activity.runOnUiThread {
                     if (stopped.get()) return@runOnUiThread
+                    if (myGen != genCounter.get()) return@runOnUiThread
                     progress.dismiss()
                     if (mbError != null) {
                         Ui.failDialog(activity,
@@ -573,7 +584,8 @@ object SearchFlow {
         onSkip: (() -> Unit)?,
         bulk: Boolean,
         onPicked: (TagData) -> Unit,
-        trackKey: String = ""
+        trackKey: String = "",
+        gen: Int = genCounter.get()
     ): (List<Opt>) -> Unit {
         val d = { v: Int -> (v * activity.resources.displayMetrics.density).toInt() }
         // A candidate chosen for this same file before is offered first.
@@ -638,18 +650,24 @@ object SearchFlow {
             this.adapter = adapter
             dividerHeight = 1
         }
-        // No Skip/Cancel button: closing the dialog (back key / outside tap)
-        // without picking counts as skipping this file.
+        // A Cancel button sits at the bottom of the candidate list;
+        // closing the dialog (cancel / back key / outside tap) without
+        // picking counts as skipping this file.
         val dlg = AlertDialog.Builder(activity)
             .setTitle(Strings.t("candidates"))
             .setView(listView)
+            .setNegativeButton(Strings.t("cancel"), null)
             .create()
         var picked = false
+        activeChooser = dlg
         dlg.setOnDismissListener {
+            if (activeChooser === dlg) activeChooser = null
             // The chooser is gone: its cover thumbnails are not needed
             // anymore and the memory goes back to the list.
             iconCache.clear()
-            if (!picked) onSkip?.invoke()
+            // A superseded search's dismissal must not advance the
+            // bulk chain: the new search owns it now.
+            if (!picked && gen == genCounter.get()) onSkip?.invoke()
         }
         listView.setOnItemClickListener { _, _, which, _ ->
             picked = true
@@ -668,20 +686,23 @@ object SearchFlow {
                     val built = chosen.build()
                     activity.runOnUiThread {
                         progress.dismiss()
-                        showDiff(activity, currentTag, built, onPicked, onSkip)
+                        if (gen == genCounter.get())
+                            showDiff(activity, currentTag, built, onPicked, onSkip)
                     }
                 } catch (e: Exception) {
                     activity.runOnUiThread {
                         progress.dismiss()
-                        Ui.failDialog(activity, "${e.javaClass.simpleName}: ${e.message}")
-                        onSkip?.invoke()
+                        if (gen == genCounter.get()) {
+                            Ui.failDialog(activity, "${e.javaClass.simpleName}: ${e.message}")
+                            onSkip?.invoke()
+                        }
                     }
                 }
             }
         }
         // Late sources append their candidates to the open chooser.
         val append: (List<Opt>) -> Unit = { more ->
-            if (more.isNotEmpty() && dlg.isShowing) {
+            if (more.isNotEmpty() && dlg.isShowing && gen == genCounter.get()) {
                 for (o in more) o.iconUrl?.let { loadIcon(it, refreshIcons) }
                 options.addAll(more)
                 adapter.notifyDataSetChanged()

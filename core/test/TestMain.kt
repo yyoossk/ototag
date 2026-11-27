@@ -361,6 +361,27 @@ fun main() {
         check("id3v1 became id3v2", head[0] == 'I'.code.toByte() && head[1] == 'D'.code.toByte(), "")
     }
 
+    // --- Strip leading track numbers from file names ---
+    check("strip dot", Renamer.stripTrackPrefix("01. Lemon") == "Lemon",
+        Renamer.stripTrackPrefix("01. Lemon"))
+    check("strip space", Renamer.stripTrackPrefix("02 アイドル") == "アイドル",
+        Renamer.stripTrackPrefix("02 アイドル"))
+    check("strip dash", Renamer.stripTrackPrefix("1- Intro") == "Intro",
+        Renamer.stripTrackPrefix("1- Intro"))
+    check("strip under", Renamer.stripTrackPrefix("03_残響散歌") == "残響散歌",
+        Renamer.stripTrackPrefix("03_残響散歌"))
+    check("strip paren", Renamer.stripTrackPrefix("12) Song") == "Song",
+        Renamer.stripTrackPrefix("12) Song"))
+    check("strip disc-track", Renamer.stripTrackPrefix("01-02 Duet") == "Duet",
+        Renamer.stripTrackPrefix("01-02 Duet"))
+    check("strip keeps plain", Renamer.stripTrackPrefix("Lemon") == "Lemon", "")
+    check("strip keeps 24K", Renamer.stripTrackPrefix("24K Magic") == "24K Magic",
+        Renamer.stripTrackPrefix("24K Magic"))
+    check("strip keeps year", Renamer.stripTrackPrefix("2024 Song") == "2024 Song",
+        Renamer.stripTrackPrefix("2024 Song"))
+    check("strip keeps number only", Renamer.stripTrackPrefix("365") == "365",
+        Renamer.stripTrackPrefix("365"))
+
     // --- Mojibake repair (Shift_JIS bytes mis-decoded as Latin-1) ---
     val original = "こんにちは世界"
     val garbled = String(original.toByteArray(Charset.forName("windows-31j")),
