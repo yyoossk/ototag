@@ -16,5 +16,10 @@
             </intent-filter>
         </activity>
         <activity android:name=".EditActivity" android:exported="false" />
+        <provider
+            android:name=".UpdateProvider"
+            android:authorities="com.yyoo.ototag.files"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

@@ -2,15 +2,10 @@ package com.yyoo.ototag
 
 import android.app.Activity
 import android.app.AlertDialog
-import android.app.DownloadManager
-import android.content.BroadcastReceiver
-import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.graphics.BitmapFactory
 import android.media.MediaPlayer
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.DocumentsContract
@@ -21,7 +16,12 @@ import android.view.ViewGroup
 import android.widget.*
 import com.yyoo.ototag.core.*
 import java.io.File
+import java.io.IOException
+import java.io.InterruptedIOException
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 class MainActivity : Activity() {
@@ -62,9 +62,29 @@ class MainActivity : Activity() {
 
     // ---- self-update (GitHub releases) ----
 
-    private var updateDownloadId: Long = -1
     private var updateProgress: AlertDialog? = null
-    private var updateReceiver: BroadcastReceiver? = null
+
+    /** First launch only: auto-update needs the "install unknown apps"
+     *  permission, so guide the user to the settings page right away. */
+    private fun maybeAskInstallPermission() {
+        if (prefs.getBoolean("permAsked", false)) return
+        prefs.edit().putBoolean("permAsked", true).apply()
+        if (packageManager.canRequestPackageInstalls()) return
+        AlertDialog.Builder(this)
+            .setTitle(Strings.t("upd_title"))
+            .setMessage(Strings.t("upd_perm_msg"))
+            .setPositiveButton(Strings.t("upd_perm_open")) { _, _ -> openInstallSettings() }
+            .setNegativeButton(Strings.t("upd_later"), null)
+            .show()
+    }
+
+    private fun openInstallSettings() {
+        try {
+            startActivity(Intent(
+                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:$packageName")))
+        } catch (e: Exception) { }
+    }
 
     private fun checkUpdate() {
         thread {
@@ -87,51 +107,112 @@ class MainActivity : Activity() {
 
     private fun startUpdateDownload(info: UpdateInfo) {
         if (!packageManager.canRequestPackageInstalls()) {
-            toast(Strings.t("upd_install_perm"))
-            try {
-                startActivity(Intent(
-                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                    Uri.parse("package:$packageName")))
-            } catch (e: Exception) { }
+            AlertDialog.Builder(this)
+                .setTitle(Strings.t("upd_title"))
+                .setMessage(Strings.t("upd_perm_msg"))
+                .setPositiveButton(Strings.t("upd_perm_open")) { _, _ -> openInstallSettings() }
+                .setNegativeButton(Strings.t("upd_later"), null)
+                .show()
             return
         }
-        val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-        val req = DownloadManager.Request(Uri.parse(info.androidApkUrl))
-            .setTitle("OtoTag ${info.tag}")
-            .setMimeType("application/vnd.android.package-archive")
-            .setDestinationInExternalFilesDir(this, Environment.DIRECTORY_DOWNLOADS, "OtoTag-update.apk")
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE)
-        try { File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "OtoTag-update.apk").delete() } catch (e: Exception) { }
-        updateDownloadId = dm.enqueue(req)
+        // In-app download with a live progress bar. (DownloadManager was
+        // dropped: its completion broadcast is not delivered to a
+        // RECEIVER_NOT_EXPORTED receiver, so the old dialog hung forever.)
+        val cancelled = AtomicBoolean(false)
+        val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+        }
+        val label = TextView(this).apply { text = Strings.t("upd_downloading") }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            val pad = dp(20); setPadding(pad, dp(12), pad, dp(4))
+            addView(label)
+            addView(bar)
+        }
         updateProgress = AlertDialog.Builder(this)
-            .setMessage(Strings.t("upd_downloading"))
+            .setView(box)
+            .setNegativeButton(Strings.t("cancel")) { _, _ -> cancelled.set(true) }
             .setCancelable(false)
             .show()
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                if (intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1) != updateDownloadId) return
-                updateProgress?.dismiss(); updateProgress = null
-                val uri = try { dm.getUriForDownloadedFile(updateDownloadId) } catch (e: Exception) { null }
-                if (uri == null) { toast(Strings.t("upd_failed")); return }
-                val install = Intent(Intent.ACTION_VIEW)
-                    .setDataAndType(uri, "application/vnd.android.package-archive")
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                try { startActivity(install) } catch (e: Exception) { toast(Strings.t("upd_failed")) }
+        val dest = File(getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "OtoTag-update.apk")
+        thread {
+            try {
+                downloadApk(info.androidApkUrl, dest, cancelled) { pct ->
+                    runOnUiThread {
+                        bar.progress = pct
+                        label.text = "${Strings.t("upd_downloading")} $pct%"
+                    }
+                }
+                runOnUiThread {
+                    updateProgress?.dismiss(); updateProgress = null
+                    val uri = Uri.parse("content://com.yyoo.ototag.files/${dest.name}")
+                    val install = Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(uri, "application/vnd.android.package-archive")
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    try { startActivity(install) }
+                    catch (e: Exception) { Ui.failDialog(this, "${e.javaClass.simpleName}: ${e.message}") }
+                }
+            } catch (e: InterruptedIOException) {
+                try { dest.delete() } catch (x: Exception) { }
+                runOnUiThread { updateProgress?.dismiss(); updateProgress = null }
+            } catch (e: Exception) {
+                try { dest.delete() } catch (x: Exception) { }
+                runOnUiThread {
+                    updateProgress?.dismiss(); updateProgress = null
+                    Ui.failDialog(this, "${e.javaClass.simpleName}: ${e.message}")
+                }
             }
         }
-        updateReceiver = receiver
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("UnspecifiedRegisterReceiverFlag")
-            registerReceiver(receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE))
+    }
+
+    /** Streams the APK to dest, following redirects by hand (the GitHub
+     *  release URL 302s to a signed asset URL), reporting percent progress. */
+    private fun downloadApk(url: String, dest: File, cancelled: AtomicBoolean, onPct: (Int) -> Unit) {
+        var current = url
+        var redirects = 0
+        while (true) {
+            val conn = URL(current).openConnection() as HttpURLConnection
+            conn.instanceFollowRedirects = false
+            conn.connectTimeout = 15000
+            conn.readTimeout = 30000
+            conn.setRequestProperty("User-Agent", "OtoTag")
+            val code = conn.responseCode
+            if (code in intArrayOf(301, 302, 303, 307, 308)) {
+                val loc = conn.getHeaderField("Location")
+                    ?: throw IOException("redirect without location")
+                conn.disconnect()
+                if (++redirects > 5) throw IOException("too many redirects")
+                current = URL(URL(current), loc).toString()
+                continue
+            }
+            if (code != 200) throw IOException("HTTP $code")
+            val total = conn.contentLengthLong
+            conn.inputStream.use { ins ->
+                dest.outputStream().use { out ->
+                    val buf = ByteArray(64 * 1024)
+                    var done = 0L
+                    var lastPct = -1
+                    while (true) {
+                        if (cancelled.get()) throw InterruptedIOException("cancelled")
+                        val n = ins.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        done += n
+                        if (total > 0) {
+                            val pct = (done * 100 / total).toInt()
+                            if (pct != lastPct) { lastPct = pct; onPct(pct) }
+                        }
+                    }
+                }
+            }
+            if (total > 0 && dest.length() != total)
+                throw IOException("incomplete download: ${dest.length()} / $total")
+            return
         }
     }
 
     override fun onDestroy() {
         stopPlayer()
-        updateReceiver?.let { try { unregisterReceiver(it) } catch (e: Exception) { } }
-        updateReceiver = null
         super.onDestroy()
     }
     private val prefs by lazy { getSharedPreferences("ototag", MODE_PRIVATE) }
@@ -267,6 +348,7 @@ class MainActivity : Activity() {
         root.addView(bar)
 
         setContentView(root)
+        maybeAskInstallPermission()
         checkUpdate()
 
         prefs.getString("tree", null)?.let { uriStr ->
