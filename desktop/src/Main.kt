@@ -424,6 +424,28 @@ fun searchAndPick(
     }
 }
 
+/** Update history window: the published GitHub releases, newest first. */
+fun showHistory() {
+    val dlg = JDialog(frame, Strings.t("history"), true)
+    val area = JTextArea(Strings.t("loading")).apply {
+        isEditable = false; lineWrap = true; wrapStyleWord = true
+    }
+    dlg.contentPane.layout = BorderLayout()
+    dlg.add(JScrollPane(area), BorderLayout.CENTER)
+    dlg.setSize(640, 520); dlg.setLocationRelativeTo(frame)
+    thread {
+        val releases = try { UpdateChecker.fetchReleases() } catch (e: Exception) { emptyList() }
+        SwingUtilities.invokeLater {
+            area.text = if (releases.isEmpty()) Strings.t("no_results")
+            else releases.joinToString("\n\n") { r ->
+                "${r.tag}   ${r.publishedAt}\n${r.body.trim()}"
+            }
+            area.caretPosition = 0
+        }
+    }
+    dlg.isVisible = true
+}
+
 fun applySearchTo(row: Row, label: String?, bulk: Boolean, onSkip: () -> Unit, onStop: () -> Unit, done: () -> Unit) {
     searchAndPick(row.tag, NameParser.parse(row.file), label, onSkip, onStop, bulk) { picked ->
         // Partial sources (Audius / NDL) only fill what they know.
@@ -901,6 +923,9 @@ fun main() {
                 val fc = JFileChooser().apply { isMultiSelectionEnabled = true }
                 if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) addFiles(fc.selectedFiles.toList(), startChecked = true)
             }
+        })
+        top.add(JButton(Strings.t("history")).apply { vivid(this, 0x0D9488) }.apply {
+            addActionListener { showHistory() }
         })
         val langBox = JComboBox(Strings.LANGS.map { Strings.LANG_NAMES[it] }.toTypedArray())
         langBox.selectedIndex = Strings.LANGS.indexOf(Strings.lang)

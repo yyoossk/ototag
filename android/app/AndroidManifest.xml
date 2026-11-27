@@ -16,6 +16,7 @@
             </intent-filter>
         </activity>
         <activity android:name=".EditActivity" android:exported="false" />
+        <activity android:name=".HistoryActivity" android:exported="false" />
         <provider
             android:name=".UpdateProvider"
             android:authorities="com.yyoo.ototag.files"

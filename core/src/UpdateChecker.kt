@@ -11,6 +11,15 @@ data class UpdateInfo(
     val windowsZipUrl: String
 )
 
+/** One published release, for the in-app update history page. */
+data class ReleaseNote(
+    val tag: String,
+    /** Publication date, yyyy-MM-dd. */
+    val publishedAt: String,
+    /** The release notes text as published. */
+    val body: String
+)
+
 /**
  * Self-update check against the GitHub releases of yyoossk/ototag.
  * Version stamps use the format YYYYMMDD-HHMM, so a plain string
@@ -59,6 +68,25 @@ object UpdateChecker {
             }
             UpdateInfo(tag, apk, zip)
         } catch (e: Exception) { null }
+    }
+
+    /** Recent published releases, newest first, for the history page. */
+    fun fetchReleases(): List<ReleaseNote> {
+        val url = apiUrl.removeSuffix("/latest") + "?per_page=30"
+        val root = JsonParser(String(get(url), Charsets.UTF_8)).parse()
+        val out = ArrayList<ReleaseNote>()
+        for (item in root.asArr()) {
+            val o = item.asObj()
+            if (o["draft"] as? Boolean == true) continue
+            val tag = o["tag_name"].asStr()
+            if (tag.isBlank()) continue
+            out.add(ReleaseNote(
+                tag = tag,
+                publishedAt = o["published_at"].asStr().take(10),
+                body = o["body"].asStr()
+            ))
+        }
+        return out
     }
 
     /** True when [latest] is a newer build stamp than [current]. */

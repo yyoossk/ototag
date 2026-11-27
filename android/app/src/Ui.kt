@@ -42,6 +42,12 @@ object Ui {
         }
     }
 
+    /** White rounded card background used for list rows and history entries. */
+    fun cardBg(ctx: Context, radiusDp: Float = 14f): GradientDrawable = GradientDrawable().apply {
+        setColor(0xFFFFFFFF.toInt())
+        cornerRadius = dpf(ctx, radiusDp)
+    }
+
     /** Sunset gradient band used for the header (violet → fuchsia → orange). */
     fun headerGradient(): GradientDrawable = GradientDrawable(
         GradientDrawable.Orientation.LEFT_RIGHT,

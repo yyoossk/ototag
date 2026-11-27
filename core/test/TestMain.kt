@@ -281,6 +281,13 @@ fun main() {
     MusixmatchClient.apiKey = "BADKEY"
     check("mxm bad key", MusixmatchClient.fetchLyrics("Lemon", "米津玄師") == null, "")
 
+    // --- Update history (fixture built from the real published releases) ---
+    UpdateChecker.fetcher = { File("testdata/github-releases.json").readBytes() }
+    val rels = UpdateChecker.fetchReleases()
+    check("releases parsed", rels.size == 2 && rels[0].tag == "20261127-2346" &&
+        rels[0].publishedAt == "2026-11-27" && rels[0].body.contains("Musixmatch") &&
+        rels[1].tag == "20261127-2335", rels.size.toString())
+
     println(if (failures == 0) "ALL PASS" else "FAILURES: $failures")
     kotlin.system.exitProcess(if (failures == 0) 0 else 1)
 }

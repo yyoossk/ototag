@@ -254,6 +254,12 @@ class MainActivity : Activity() {
         header.addView(View(this).apply {
             layoutParams = LinearLayout.LayoutParams(0, 1, 1f)
         })
+        header.addView(Button(this).apply {
+            text = Strings.t("history"); Ui.styleButton(this, Ui.TEAL)
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, HistoryActivity::class.java))
+            }
+        })
         header.addView(TextView(this).apply {
             text = Strings.t("language"); textSize = 13f
             setTextColor(Ui.SUB)
