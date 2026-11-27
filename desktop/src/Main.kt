@@ -63,6 +63,30 @@ class Row(val file: File) {
     fun primeIcon(cover: ByteArray) {
         iconFor = coverKey
         icon = decodeIcon(cover)
+        touchIcon(this)
+    }
+
+    companion object {
+        /**
+         * Bounds how many decoded list icons stay in memory: beyond the
+         * cap, the least recently shown ones are dropped (they decode
+         * again when scrolled back to).
+         */
+        private const val ICON_CAP = 48
+        private val iconLru = object : LinkedHashMap<Row, Unit>(64, 0.75f, true) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<Row, Unit>
+            ): Boolean {
+                if (size > ICON_CAP) {
+                    eldest.key.icon = null
+                    eldest.key.iconFor = 0
+                    return true
+                }
+                return false
+            }
+        }
+
+        @Synchronized fun touchIcon(row: Row) { iconLru[row] = Unit }
     }
 
     private fun decodeIcon(cover: ByteArray): ImageIcon? = try {
@@ -86,11 +110,12 @@ class Row(val file: File) {
 
     fun coverIcon(): ImageIcon? {
         if (!hasCover) { icon = null; iconFor = 0; return null }
-        if (icon != null && iconFor == coverKey) return icon
+        if (icon != null && iconFor == coverKey) { touchIcon(this); return icon }
         val cover = tag?.cover ?: try { TagService.read(file).cover }
             catch (e: Exception) { null } ?: run { icon = null; iconFor = 0; return null }
         iconFor = coverKey
         icon = decodeIcon(cover)
+        touchIcon(this)
         return icon
     }
 }
@@ -223,6 +248,43 @@ fun fmtSize(bytes: Long): String =
     if (bytes >= 1024 * 1024) String.format(Locale.US, "%.1f MB", bytes / 1048576.0)
     else "${bytes / 1024} KB"
 
+/** Recently opened folders (absolute paths, newest first, up to 5). */
+fun recentDirs(): List<String> =
+    (loadProps().getProperty("recent_dirs") ?: "").split("\n").filter { it.isNotBlank() }
+
+fun rememberDir(dir: File) {
+    val rest = recentDirs().filter { it != dir.absolutePath }
+    saveProp("recent_dirs", (listOf(dir.absolutePath) + rest).take(5).joinToString("\n"))
+}
+
+/** Folder button: offer the recent folders first when there are any. */
+fun pickFolderOrHistory() {
+    val recent = recentDirs().map { File(it) }.filter { it.isDirectory }
+    if (recent.isEmpty()) {
+        val fc = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
+        if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
+            rememberDir(fc.selectedFile)
+            addFiles(listOf(fc.selectedFile))
+        }
+        return
+    }
+    val labels = recent.map { it.absolutePath } + Strings.t("pick_new_folder")
+    val pick = JOptionPane.showInputDialog(frame, Strings.t("recent_folders"),
+        Strings.t("choose_folder"), JOptionPane.PLAIN_MESSAGE, null,
+        labels.toTypedArray(), labels[0]) as? String ?: return
+    if (pick == Strings.t("pick_new_folder")) {
+        val fc = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
+        if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) {
+            rememberDir(fc.selectedFile)
+            addFiles(listOf(fc.selectedFile))
+        }
+    } else {
+        val dir = File(pick)
+        rememberDir(dir)
+        addFiles(listOf(dir))
+    }
+}
+
 fun info(msg: String) = SwingUtilities.invokeLater {
     JOptionPane.showMessageDialog(frame, msg, "OtoTag", JOptionPane.INFORMATION_MESSAGE)
 }
@@ -279,6 +341,7 @@ fun searchAndPick(
     tag: TagData?, parsed: ParsedName?, localFile: File? = null, progressLabel: String? = null,
     onSkip: (() -> Unit)? = null, onStop: (() -> Unit)? = null,
     bulk: Boolean = false,
+    presetQuery: String? = null,
     onPicked: (TagData) -> Unit
 ) {
     // The user can type / edit the search words before the search runs.
@@ -286,10 +349,18 @@ fun searchAndPick(
         tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title,
         tag?.artist?.takeIf { it.isNotBlank() } ?: parsed?.artist
     ).joinToString(" ").trim()
-    val typed = JOptionPane.showInputDialog(frame, Strings.t("enter_query"), autoQuery)
-    if (typed == null || typed.isBlank()) { onStop?.invoke(); return }
-    val query = typed.trim()
-    val auto = query == autoQuery
+    val query: String
+    val auto: Boolean
+    if (presetQuery != null) {
+        // A narrowed re-search (title only / artist only): no prompt.
+        query = presetQuery
+        auto = false
+    } else {
+        val typed = JOptionPane.showInputDialog(frame, Strings.t("enter_query"), autoQuery)
+        if (typed == null || typed.isBlank()) { onStop?.invoke(); return }
+        query = typed.trim()
+        auto = query == autoQuery
+    }
     val stopped = java.util.concurrent.atomic.AtomicBoolean(false)
     var progress: JDialog? = null // only touched on the EDT (creation and disposal are both invokeLater)
     SwingUtilities.invokeLater {
@@ -429,7 +500,30 @@ fun searchAndPick(
             if (cands.isEmpty() && fpCands.isEmpty() && atSongs.isEmpty() && itunes.isEmpty() &&
                 deezer.isEmpty() && vgmdb.isEmpty() && audius.isEmpty() && ndl.isEmpty()) {
                 if (mbError != null) { fail("${mbError.javaClass.simpleName}: ${mbError.message}"); onStop?.invoke() }
-                else { info(Strings.t("no_results")); onSkip?.invoke() }
+                else {
+                    // Offer narrower re-searches before giving up.
+                    val title = tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title ?: ""
+                    val artist = tag?.artist?.takeIf { it.isNotBlank() } ?: parsed?.artist ?: ""
+                    val labels = ArrayList<String>()
+                    val queries = ArrayList<String>()
+                    if (title.isNotBlank() && title != query) {
+                        labels.add(Strings.t("title_only")); queries.add(title)
+                    }
+                    if (artist.isNotBlank() && artist != query) {
+                        labels.add(Strings.t("artist_only")); queries.add(artist)
+                    }
+                    if (labels.isEmpty()) { info(Strings.t("no_results")); onSkip?.invoke() }
+                    else {
+                        labels.add(Strings.t("cancel"))
+                        val pick = JOptionPane.showOptionDialog(frame, Strings.t("no_results"),
+                            "OtoTag", JOptionPane.DEFAULT_OPTION, JOptionPane.INFORMATION_MESSAGE,
+                            null, labels.toTypedArray(), labels.last())
+                        if (pick in queries.indices) {
+                            searchAndPick(tag, parsed, localFile, progressLabel,
+                                onSkip, onStop, bulk, queries[pick], onPicked)
+                        } else onSkip?.invoke()
+                    }
+                }
                 return@invokeLater
             }
             fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -1171,7 +1265,8 @@ fun checkUpdateDesktop() {
     if (current.isBlank()) return
     thread {
         val info = UpdateChecker.fetchLatest() ?: return@thread
-        if (!UpdateChecker.isNewer(info.tag, current) || info.windowsZipUrl.isBlank()) return@thread
+        if (!UpdateChecker.isNewer(info.tag, current) ||
+            (info.windowsZipUrl.isBlank() && info.windowsJarUrl.isBlank())) return@thread
         SwingUtilities.invokeLater {
             val pick = JOptionPane.showOptionDialog(frame, info.tag, Strings.t("upd_title"),
                 JOptionPane.DEFAULT_OPTION, JOptionPane.INFORMATION_MESSAGE, null,
@@ -1189,6 +1284,22 @@ fun applyUpdateDesktop(info: UpdateInfo) {
         try {
             val jarFile = File(object {}.javaClass.protectionDomain.codeSource.location.toURI())
             val appDir = jarFile.parentFile
+            // Small path: when the release carries the jar on its own,
+            // download just that (~1 MB) instead of the whole zip.
+            if (info.windowsJarUrl.isNotBlank()) {
+                val newJar = File(appDir, "OtoTag.jar.new")
+                UpdateChecker.download(info.windowsJarUrl, newJar)
+                val bat = File(appDir, "apply-update.bat")
+                bat.writeText("@echo off\r\n" +
+                    "timeout /t 3 /nobreak >nul\r\n" +
+                    "if exist \"%~dp0OtoTag.jar.old\" del /Q \"%~dp0OtoTag.jar.old\"\r\n" +
+                    "ren \"%~dp0OtoTag.jar\" OtoTag.jar.old\r\n" +
+                    "ren \"%~dp0OtoTag.jar.new\" OtoTag.jar\r\n" +
+                    "start \"\" \"%~dp0OtoTag.exe\"\r\n")
+                ProcessBuilder("cmd", "/c", "start", "/min", bat.absolutePath)
+                    .directory(appDir).start()
+                kotlin.system.exitProcess(0)
+            }
             val zipFile = File(appDir, "OtoTag-update.zip")
             UpdateChecker.download(info.windowsZipUrl, zipFile)
             val newDir = File(appDir, "update-new")
@@ -1286,10 +1397,7 @@ fun main() {
 
         val top = JPanel(FlowLayout(FlowLayout.LEFT)).apply { background = themeBg }
         top.add(JButton(Strings.t("choose_folder")).apply { vivid(this, 0x6D28D9) }.apply {
-            addActionListener {
-                val fc = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY }
-                if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION) addFiles(listOf(fc.selectedFile))
-            }
+            addActionListener { pickFolderOrHistory() }
         })
         top.add(JButton(Strings.t("choose_files")).apply { vivid(this, 0xDB2777) }.apply {
             addActionListener {

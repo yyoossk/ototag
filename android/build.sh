@@ -77,9 +77,16 @@ fi
 "$BT/apksigner" verify "$OUT"
 # Guard: a missing <uses-sdk> makes targetSdk default to <4, which modern
 # Android refuses to install. Fail the build instead of shipping that again.
-"$BT/aapt2" dump badging "$OUT" | grep -q "targetSdkVersion:'34'" || {
-    echo "ERROR: targetSdkVersion is not 34 in the built APK"; exit 1; }
-"$BT/aapt2" dump badging "$OUT" | grep -q "sdkVersion:'26'" || {
-    echo "ERROR: minSdkVersion is not 26 in the built APK"; exit 1; }
+# (Capture first: grep -q in a pipefail pipeline can SIGPIPE aapt2 and
+# report a false failure even when the value is present.)
+BADGING="$("$BT/aapt2" dump badging "$OUT")"
+case "$BADGING" in
+    *"targetSdkVersion:'34'"*) ;;
+    *) echo "ERROR: targetSdkVersion is not 34 in the built APK"; exit 1 ;;
+esac
+case "$BADGING" in
+    *"sdkVersion:'26'"*) ;;
+    *) echo "ERROR: minSdkVersion is not 26 in the built APK"; exit 1 ;;
+esac
 ls -la "$OUT"
 sha256sum "$OUT"

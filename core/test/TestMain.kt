@@ -158,7 +158,8 @@ fun main() {
     val latest = UpdateChecker.fetchLatest()
     check("update tag", latest?.tag == "20261127-0644", latest?.tag ?: "null")
     check("update asset urls", latest?.androidApkUrl?.endsWith("OtoTag-Android.apk") == true &&
-        latest?.windowsZipUrl?.endsWith("OtoTag-Windows.zip") == true, latest.toString())
+        latest?.windowsZipUrl?.endsWith("OtoTag-Windows.zip") == true &&
+        latest?.windowsJarUrl?.endsWith("OtoTag.jar") == true, latest.toString())
     check("isNewer true", UpdateChecker.isNewer("20261127-0644", "20261127-0528"))
     check("isNewer false (same)", !UpdateChecker.isNewer("20261127-0644", "20261127-0644"))
     check("isNewer false (older)", !UpdateChecker.isNewer("20261127-0528", "20261127-0644"))

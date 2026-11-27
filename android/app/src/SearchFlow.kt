@@ -235,12 +235,48 @@ object SearchFlow {
                             "${mbError.javaClass.simpleName}: ${mbError.message}")
                         onStop?.invoke()
                     } else {
-                        Toast.makeText(activity, Strings.t("no_results"), Toast.LENGTH_LONG).show()
-                        onSkip?.invoke()
+                        showRetryDialog(activity, tag, parsed, localFile,
+                            progressLabel, onSkip, onStop, bulk, onPicked)
                     }
                 } else showChooser(activity, tag, cands, fpCands, atSongs, itunes, deezer, vgmdb, audius, ndl, onSkip, bulk, onPicked)
             }
         }
+    }
+
+    /**
+     * No candidates at all: offer narrower re-searches with just the
+     * title or just the artist before giving up on this file.
+     */
+    private fun showRetryDialog(
+        activity: Activity,
+        tag: TagData?,
+        parsed: ParsedName?,
+        localFile: java.io.File?,
+        progressLabel: String?,
+        onSkip: (() -> Unit)?,
+        onStop: (() -> Unit)?,
+        bulk: Boolean,
+        onPicked: (TagData) -> Unit
+    ) {
+        val title = tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title ?: ""
+        val artist = tag?.artist?.takeIf { it.isNotBlank() } ?: parsed?.artist ?: ""
+        if (title.isBlank() && artist.isBlank()) {
+            Toast.makeText(activity, Strings.t("no_results"), Toast.LENGTH_LONG).show()
+            onSkip?.invoke()
+            return
+        }
+        val b = AlertDialog.Builder(activity)
+            .setTitle(Strings.t("no_results"))
+            .setNegativeButton(Strings.t("cancel")) { _, _ -> onSkip?.invoke() }
+        if (title.isNotBlank()) b.setPositiveButton(Strings.t("title_only")) { _, _ ->
+            runSearch(activity, tag, parsed, localFile, title, false,
+                progressLabel, onSkip, onStop, bulk, onPicked)
+        }
+        if (artist.isNotBlank()) b.setNeutralButton(Strings.t("artist_only")) { _, _ ->
+            runSearch(activity, tag, parsed, localFile, artist, false,
+                progressLabel, onSkip, onStop, bulk, onPicked)
+        }
+        b.show()
     }
 
     /** Indeterminate progress dialog that stays up until dismissed by the flow. */

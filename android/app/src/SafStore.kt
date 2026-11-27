@@ -49,6 +49,7 @@ class Item(
 
     private fun thumbnailFrom(cover: ByteArray) {
         thumbFor = coverKey
+        ThumbCache.touch(this)
         thumb = try {
             val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
             android.graphics.BitmapFactory.decodeByteArray(cover, 0, cover.size, bounds)
@@ -60,8 +61,11 @@ class Item(
     }
 
     /** The cached thumbnail without decoding anything (null when not ready). */
-    fun peekThumbnail(): android.graphics.Bitmap? =
-        if (thumb != null && thumbFor == coverKey) thumb else null
+    fun peekThumbnail(): android.graphics.Bitmap? {
+        val t = if (thumb != null && thumbFor == coverKey) thumb else null
+        if (t != null) ThumbCache.touch(this)
+        return t
+    }
 
     /** Decoded list thumbnail; re-reads the cover from the file if needed. */
     fun thumbnail(): android.graphics.Bitmap? {
@@ -77,6 +81,28 @@ class Item(
 
 object Items {
     val list = mutableListOf<Item>()
+}
+
+/**
+ * Bounds how many decoded list thumbnails stay in memory: beyond the
+ * cap, the least recently shown ones are dropped (they simply decode
+ * again when scrolled back to).
+ */
+object ThumbCache {
+    private const val MAX = 48
+    private val lru = object : LinkedHashMap<Item, Unit>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Item, Unit>): Boolean {
+            if (size > MAX) {
+                eldest.key.thumb = null
+                eldest.key.thumbFor = 0
+                return true
+            }
+            return false
+        }
+    }
+
+    @Synchronized fun touch(item: Item) { lru[item] = Unit }
+    @Synchronized fun forget(item: Item) { lru.remove(item) }
 }
 
 object SafStore {
@@ -100,16 +126,15 @@ object SafStore {
     }
 
     /**
-     * Startup housekeeping: drops stale working copies (not touched for a
-     * day — anything from this session is fresh and stays) and the
-     * transient verify files.
+     * Startup housekeeping: the working copies are transient by design
+     * (ensureLocal re-copies from the document whenever one is needed),
+     * so the previous session's copies are all dropped here — the
+     * practical equivalent of cleaning up on exit, with no hook needed.
+     * Also drops the transient verify files.
      */
     fun cleanupCache(ctx: Context) {
         try {
-            val cutoff = System.currentTimeMillis() - 24 * 60 * 60 * 1000L
-            File(ctx.cacheDir, "items").listFiles()?.forEach {
-                if (it.lastModified() < cutoff) it.delete()
-            }
+            File(ctx.cacheDir, "items").listFiles()?.forEach { it.delete() }
             ctx.cacheDir.listFiles()?.forEach {
                 if (it.name == "verify.bin" || it.name.startsWith("verify.")) it.delete()
             }

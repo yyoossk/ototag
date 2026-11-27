@@ -8,7 +8,9 @@ import java.net.URL
 data class UpdateInfo(
     val tag: String,
     val androidApkUrl: String,
-    val windowsZipUrl: String
+    val windowsZipUrl: String,
+    /** The Windows app jar on its own, for a much smaller update download. */
+    val windowsJarUrl: String = ""
 )
 
 /** One published release, for the in-app update history page. */
@@ -58,15 +60,16 @@ object UpdateChecker {
             val root = JsonParser(String(get(apiUrl), Charsets.UTF_8)).parse().asObj()
             val tag = root["tag_name"].asStr()
             if (tag.isBlank()) return null
-            var apk = ""; var zip = ""
+            var apk = ""; var zip = ""; var jar = ""
             for (a in root["assets"].asArr()) {
                 val o = a.asObj()
                 when (o["name"].asStr()) {
                     "OtoTag-Android.apk" -> apk = o["browser_download_url"].asStr()
                     "OtoTag-Windows.zip" -> zip = o["browser_download_url"].asStr()
+                    "OtoTag.jar" -> jar = o["browser_download_url"].asStr()
                 }
             }
-            UpdateInfo(tag, apk, zip)
+            UpdateInfo(tag, apk, zip, jar)
         } catch (e: Exception) { null }
     }
 

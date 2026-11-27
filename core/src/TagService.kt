@@ -231,8 +231,15 @@ object Backup {
         backupDir.mkdirs()
         val key = Integer.toHexString(file.absolutePath.hashCode())
         val dir = File(backupDir, key); dir.mkdirs()
-        val dst = File(dir, System.currentTimeMillis().toString() + "_" + file.name)
-        file.copyTo(dst, overwrite = true)
+        // Two backups inside the same millisecond must not collapse
+        // into one generation: bump the stamp until the name is free.
+        var stamp = System.currentTimeMillis()
+        var dst = File(dir, stamp.toString() + "_" + file.name)
+        while (dst.exists()) {
+            stamp++
+            dst = File(dir, stamp.toString() + "_" + file.name)
+        }
+        file.copyTo(dst, overwrite = false)
         return dst
     }
 

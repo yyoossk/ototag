@@ -424,10 +424,7 @@ class MainActivity : Activity() {
                 setOnClickListener { fn() }
             })
         }
-        topBtn(Strings.t("choose_folder"), Ui.VIOLET) {
-            val i = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
-            startActivityForResult(i, REQ_TREE)
-        }
+        topBtn(Strings.t("choose_folder"), Ui.VIOLET) { pickFolderOrHistory() }
         topBtn(Strings.t("choose_files"), Ui.PINK) {
             val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE)
@@ -519,6 +516,14 @@ class MainActivity : Activity() {
 
         prefs.getString("tree", null)?.let { uriStr ->
             loadTree(Uri.parse(uriStr))
+        }
+        // A share / open-with that launched the app replaces the restore.
+        if (intent?.action == Intent.ACTION_SEND ||
+            intent?.action == Intent.ACTION_SEND_MULTIPLE ||
+            intent?.action == Intent.ACTION_VIEW) {
+            Items.list.clear()
+            adapter.notifyDataSetChanged()
+            handleIncoming(intent)
         }
     }
 
@@ -820,6 +825,84 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Recently opened folders (tree URIs, newest first, up to 5). */
+    private fun recentTrees(): List<String> =
+        (prefs.getString("recent_trees", "") ?: "").split("\n").filter { it.isNotBlank() }
+
+    private fun rememberTree(uri: Uri) {
+        val rest = recentTrees().filter { it != uri.toString() }
+        prefs.edit().putString("recent_trees",
+            (listOf(uri.toString()) + rest).take(5).joinToString("\n")).apply()
+    }
+
+    /** A short display name for a tree URI (its folder name). */
+    private fun treeLabel(uriStr: String): String = try {
+        val id = DocumentsContract.getTreeDocumentId(Uri.parse(uriStr))
+        id.substringAfterLast('/').ifBlank { id }
+    } catch (e: Exception) { uriStr }
+
+    /** Folder button: offer the recent folders first when there are any. */
+    private fun pickFolderOrHistory() {
+        val recent = recentTrees()
+        if (recent.isEmpty()) {
+            startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_TREE)
+            return
+        }
+        val labels = recent.map { treeLabel(it) } + Strings.t("pick_new_folder")
+        AlertDialog.Builder(this)
+            .setTitle(Strings.t("recent_folders"))
+            .setItems(labels.toTypedArray()) { _, which ->
+                if (which < recent.size) {
+                    val uri = Uri.parse(recent[which])
+                    prefs.edit().putString("tree", recent[which]).apply()
+                    rememberTree(uri)
+                    loadTree(uri)
+                } else {
+                    startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), REQ_TREE)
+                }
+            }
+            .setNegativeButton(Strings.t("cancel"), null)
+            .show()
+    }
+
+    /**
+     * Files handed to us by another app (share sheet / open-with). The
+     * grants are temporary, so the files are copied into the working
+     * cache by the normal load path while the grant lasts.
+     */
+    private fun handleIncoming(intent: Intent?) {
+        if (intent == null) return
+        val uris = ArrayList<Uri>()
+        when (intent.action) {
+            Intent.ACTION_SEND -> {
+                val u = if (android.os.Build.VERSION.SDK_INT >= 33)
+                    intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                else @Suppress("DEPRECATION") intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
+                u?.let { uris.add(it) }
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                val list = if (android.os.Build.VERSION.SDK_INT >= 33)
+                    intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                else @Suppress("DEPRECATION") intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM)
+                list?.let { uris.addAll(it) }
+            }
+            Intent.ACTION_VIEW -> intent.data?.let { uris.add(it) }
+            else -> return
+        }
+        if (uris.isEmpty()) return
+        loadFiles(uris.filter { u ->
+            val n = queryName(u)
+            n?.substringAfterLast('.', "")?.lowercase() in AUDIO_EXTS ||
+                u.toString().substringAfterLast('.', "").lowercase() in AUDIO_EXTS
+        })
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncoming(intent)
+    }
+
     private fun loadTree(treeUri: Uri) {
         stopPlayer()
         toast(Strings.t("working"))
@@ -886,6 +969,7 @@ class MainActivity : Activity() {
                         Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
                 } catch (e: Exception) { }
                 prefs.edit().putString("tree", uri.toString()).apply()
+                rememberTree(uri)
                 loadTree(uri)
             }
             REQ_FILES -> {

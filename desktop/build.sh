@@ -88,6 +88,10 @@ if [ ! -f "$ROOT/fpcalc-cache/fpcalc.exe" ]; then
 fi
 cp "$ROOT/fpcalc-cache/fpcalc.exe" "$STAGE/fpcalc.exe"
 
+# The jar on its own is also a release asset: the self-updater
+# downloads just it (~1 MB) instead of the whole zip when present.
+cp "$STAGE/OtoTag.jar" "$ROOT/OtoTag.jar"
+
 echo "-- zip"
 rm -f "$OUT"
 (cd "$STAGE" && zip -qr "$OUT" .)
