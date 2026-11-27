@@ -4,7 +4,11 @@ import org.jaudiotagger.kt.AudioTagger
 import org.jaudiotagger.kt.tag.Artwork
 import org.jaudiotagger.kt.tag.FieldKey
 import org.jaudiotagger.kt.tag.Tag
+import java.io.DataInputStream
+import java.io.DataOutputStream
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import kotlinx.io.files.Path as KPath
 
 object TagService {
@@ -226,7 +230,18 @@ object TagService {
 }
 
 object Backup {
-    /** Copies the file into backupDir under a stable per-path folder; returns the backup file. */
+    /**
+     * A backup stores a snapshot of the tags (every text field, the
+     * lyrics and the cover image), not the whole audio file: undo only
+     * ever restores the tags, and the audio data is the bulk of a song
+     * file, so snapshots are a small fraction of the old size. Backups
+     * written by older builds hold the whole file; restore detects the
+     * snapshot magic and falls back to copying those back as before.
+     */
+    private val MAGIC = byteArrayOf(
+        'O'.code.toByte(), 'T'.code.toByte(), 'B'.code.toByte(), 'K'.code.toByte(), 1)
+
+    /** Snapshots the file's tags into backupDir under a stable per-path folder. */
     fun backup(file: File, backupDir: File): File {
         backupDir.mkdirs()
         val key = Integer.toHexString(file.absolutePath.hashCode())
@@ -239,8 +254,71 @@ object Backup {
             stamp++
             dst = File(dir, stamp.toString() + "_" + file.name)
         }
-        file.copyTo(dst, overwrite = false)
+        // Snapshot the tags; if the tags cannot be read at all, fall
+        // back to a whole-file copy so the file stays protected.
+        val tag = try { TagService.read(file) } catch (e: Exception) { null }
+        if (tag != null) writeSnapshot(dst, tag)
+        else file.copyTo(dst, overwrite = false)
         return dst
+    }
+
+    private fun writeSnapshot(dst: File, tag: TagData) {
+        DataOutputStream(FileOutputStream(dst).buffered()).use { out ->
+            out.write(MAGIC)
+            fun field(s: String) {
+                val b = s.toByteArray(Charsets.UTF_8)
+                out.writeInt(b.size); out.write(b)
+            }
+            field(tag.title); field(tag.artist); field(tag.album); field(tag.albumArtist)
+            field(tag.composer); field(tag.genre); field(tag.year); field(tag.track)
+            field(tag.trackTotal); field(tag.disc); field(tag.discTotal); field(tag.comment)
+            field(tag.isrc); field(tag.lyrics); field(tag.mbRecordingId); field(tag.mbReleaseId)
+            val cover = tag.cover
+            if (cover == null) out.writeInt(-1)
+            else { out.writeInt(cover.size); out.write(cover) }
+        }
+    }
+
+    private fun isSnapshot(f: File): Boolean = try {
+        FileInputStream(f).use {
+            val b = ByteArray(5)
+            it.read(b) == 5 && b.contentEquals(MAGIC)
+        }
+    } catch (e: Exception) { false }
+
+    private fun readSnapshot(f: File): TagData? = try {
+        DataInputStream(FileInputStream(f).buffered()).use { inp ->
+            val magic = ByteArray(5); inp.readFully(magic)
+            if (!magic.contentEquals(MAGIC)) return null
+            fun field(): String {
+                val n = inp.readInt()
+                val b = ByteArray(n); inp.readFully(b)
+                return String(b, Charsets.UTF_8)
+            }
+            val t = TagData(
+                title = field(), artist = field(), album = field(), albumArtist = field(),
+                composer = field(), genre = field(), year = field(), track = field(),
+                trackTotal = field(), disc = field(), discTotal = field(), comment = field(),
+                isrc = field(), lyrics = field(), mbRecordingId = field(), mbReleaseId = field()
+            )
+            val cn = inp.readInt()
+            if (cn >= 0) {
+                val b = ByteArray(cn); inp.readFully(b)
+                t.cover = b
+            }
+            t
+        }
+    } catch (e: Exception) { null }
+
+    /** Applies one backup file to [file]: snapshot → write its tags; legacy → copy back. */
+    private fun applyBackup(b: File, file: File): Boolean {
+        if (isSnapshot(b)) {
+            val snap = readSnapshot(b) ?: return false
+            TagService.write(file, snap)
+            return true
+        }
+        b.copyTo(file, overwrite = true)
+        return true
     }
 
     /** Backups are keyed by absolute path; call this after a rename so Undo follows the file. */
@@ -262,8 +340,7 @@ object Backup {
 
     fun restore(file: File, backupDir: File): Boolean {
         val b = latestBackup(file, backupDir) ?: return false
-        b.copyTo(file, overwrite = true)
-        return true
+        return applyBackup(b, file)
     }
 
     /**
@@ -289,8 +366,7 @@ object Backup {
                 (it.name.substringBefore('_').toLongOrNull() ?: Long.MAX_VALUE) <= atOrBefore
             }
             .maxByOrNull { it.name } ?: return false
-        b.copyTo(file, overwrite = true)
-        return true
+        return applyBackup(b, file)
     }
 
     /**

@@ -76,7 +76,17 @@ class EditActivity : Activity() {
 
         for (k in fieldKeys) {
             root.addView(TextView(this).apply { text = Strings.t(k); setTextColor(Ui.SUB) })
-            val et = EditText(this); inputs[k] = et; root.addView(et)
+            // The genre field offers the common genres as quick picks
+            // (still freely editable).
+            val et: EditText = if (k == "genre") {
+                android.widget.AutoCompleteTextView(this).apply {
+                    setAdapter(android.widget.ArrayAdapter(this@EditActivity,
+                        android.R.layout.simple_dropdown_item_1line, TagData.GENRES))
+                    threshold = 1
+                    setOnClickListener { if (text.isEmpty()) showDropDown() }
+                }
+            } else EditText(this)
+            inputs[k] = et; root.addView(et)
         }
 
         root.addView(TextView(this).apply { text = Strings.t("cover"); setTextColor(Ui.SUB) })

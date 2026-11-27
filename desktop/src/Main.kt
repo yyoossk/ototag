@@ -133,6 +133,10 @@ fun shownRows(): List<Row> {
         1 -> rows.filter { it.tag == null || it.tag!!.isBasicallyEmpty() }
         2 -> rows.filter { !it.hasCover }
         3 -> rows.filter { it.failed }
+        4 -> rows.filter { it.tag?.title.isNullOrBlank() }
+        5 -> rows.filter { it.tag?.artist.isNullOrBlank() }
+        6 -> rows.filter { it.tag?.year.isNullOrBlank() }
+        7 -> rows.filter { it.tag?.lyrics.isNullOrBlank() }
         else -> rows
     }
     return when (sortMode) {
@@ -368,6 +372,207 @@ fun searchAndPick(
             stopped.set(true); onStop?.invoke()
         }.also { it.isVisible = true }
     }
+    class DlgOpt(val title: String, val sub: String, val iconUrl: String?, val build: () -> TagData)
+    fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    /** Builds the chooser rows for whichever sources are passed in. */
+    fun buildOpts(
+        mb: List<MbCandidate> = emptyList(), fp: List<MbCandidate> = emptyList(),
+        at: List<AtSong> = emptyList(), itunes: List<ItunesTrack> = emptyList(),
+        deezer: List<DeezerTrack> = emptyList(), vgmdb: List<VgmdbTrack> = emptyList(),
+        audius: List<AudiusTrack> = emptyList(), ndl: List<NdlRecord> = emptyList()
+    ): MutableList<DlgOpt> {
+        val options = ArrayList<DlgOpt>()
+        // Fingerprint matches first: they identify this exact recording.
+        for (c in fp) {
+            if (c.releases.isEmpty()) {
+                options.add(DlgOpt(c.title, "${c.artist} · AcoustID", null) {
+                    TagData(title = c.title, artist = c.artist, mbRecordingId = c.recordingId)
+                })
+            }
+            for (r in c.releases) {
+                val meta = listOf(r.date.take(4), r.country).filter { it.isNotBlank() }.joinToString(", ")
+                options.add(DlgOpt(c.title, "${c.artist} — ${r.title} ($meta) · AcoustID",
+                    MbClient.coverUrl(r.id).replace("front-250", "front-120")) {
+                    MbClient.buildTag(c, r)
+                })
+            }
+        }
+        for (c in mb) {
+            if (c.releases.isEmpty()) {
+                options.add(DlgOpt(c.title, c.artist, null) {
+                    TagData(title = c.title, artist = c.artist, mbRecordingId = c.recordingId)
+                })
+            }
+            for (r in c.releases) {
+                val meta = listOf(r.date.take(4), r.country).filter { it.isNotBlank() }.joinToString(", ")
+                options.add(DlgOpt(c.title, "${c.artist} — ${r.title} ($meta)",
+                    MbClient.coverUrl(r.id).replace("front-250", "front-120")) {
+                    MbClient.buildTag(c, r)
+                })
+            }
+        }
+        for (s in at) {
+            val animePart = when {
+                s.anime.isBlank() -> ""
+                s.year.isNotBlank() -> " — ${s.anime} (${s.year})"
+                else -> " — ${s.anime}"
+            }
+            val labelPart = if (s.themeLabel.isNotBlank()) " · ${s.themeLabel}" else ""
+            options.add(DlgOpt(s.title, "${s.artist}$animePart$labelPart · AnimeThemes", null) {
+                s.toTag()
+            })
+        }
+        for (t in itunes) {
+            val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
+            options.add(DlgOpt(t.title, "${t.artist} — ${t.album}$yr · iTunes",
+                t.artworkUrl.ifBlank { null }?.replace("600x600bb.jpg", "100x100bb.jpg")) {
+                ItunesClient.buildTag(t)
+            })
+        }
+        for (t in deezer) {
+            options.add(DlgOpt(t.title, "${t.artist} — ${t.album} · Deezer",
+                t.coverUrl.ifBlank { null }?.replace("1000x1000", "150x150")) {
+                DeezerClient.buildTag(t)
+            })
+        }
+        for (t in vgmdb) {
+            val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
+            options.add(DlgOpt(t.title, "${t.artist} — ${t.album}$yr · VGMdb",
+                t.coverThumbUrl.ifBlank { null }) {
+                VgmdbClient.buildTag(t)
+            })
+        }
+        for (t in audius) {
+            val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
+            options.add(DlgOpt(t.title, "${t.artist}$yr · Audius",
+                t.coverThumbUrl.ifBlank { null }) {
+                AudiusClient.buildTag(t)
+            })
+        }
+        for (r in ndl) {
+            val yr = if (r.year.isNotBlank()) " (${r.year})" else ""
+            options.add(DlgOpt(r.album, "${r.artist}$yr · NDL", null) {
+                NdlClient.buildTag(r)
+            })
+        }
+        return options
+    }
+    var chooserAppend: ((List<DlgOpt>) -> Unit)? = null
+    /** Opens the candidate chooser; later sources append via chooserAppend. */
+    fun openChooser(initial: MutableList<DlgOpt>) {
+        val model = javax.swing.DefaultListModel<DlgOpt>()
+        initial.forEach { model.addElement(it) }
+        SwingUtilities.invokeLater {
+            progress?.dispose()
+            // Cover thumbnails load in the background; rows repaint as they land.
+            val iconCache = java.util.Collections.synchronizedMap(HashMap<String, ImageIcon>())
+            val iconLoading = java.util.Collections.synchronizedSet(HashSet<String>())
+            val list = JList(model).apply {
+                selectionMode = ListSelectionModel.SINGLE_SELECTION
+                if (model.size > 0) selectedIndex = 0
+            }
+            fun loadIcon(url: String) {
+                if (iconCache.containsKey(url) || !iconLoading.add(url)) return
+                thread {
+                    try {
+                        val img = javax.imageio.ImageIO.read(java.net.URL(url))
+                        if (img != null) {
+                            iconCache[url] = ImageIcon(
+                                img.getScaledInstance(48, 48, java.awt.Image.SCALE_SMOOTH))
+                            SwingUtilities.invokeLater { list.repaint() }
+                        }
+                    } catch (e: Exception) { }
+                    iconLoading.remove(url)
+                }
+            }
+            list.cellRenderer = object : ListCellRenderer<DlgOpt> {
+                override fun getListCellRendererComponent(
+                    l: JList<out DlgOpt>, value: DlgOpt, index: Int,
+                    selected: Boolean, focus: Boolean
+                ): java.awt.Component {
+                    val iconLabel = JLabel().apply {
+                        preferredSize = java.awt.Dimension(48, 48)
+                        val u = value.iconUrl
+                        if (u != null) {
+                            val ic = iconCache[u]
+                            if (ic != null) icon = ic else loadIcon(u)
+                        }
+                    }
+                    val text = JLabel(
+                        "<html><div style='width:440px'><b>${esc(value.title)}</b><br>" +
+                            "<font color='${if (darkMode) "#B8B0D0" else "#666666"}'>${esc(value.sub)}</font></div></html>")
+                    return JPanel(BorderLayout(8, 0)).apply {
+                        border = BorderFactory.createEmptyBorder(6, 8, 6, 8)
+                        add(iconLabel, BorderLayout.WEST)
+                        add(text, BorderLayout.CENTER)
+                        background = if (selected) l.selectionBackground else l.background
+                        text.foreground = if (selected) l.selectionForeground else l.foreground
+                        isOpaque = true
+                    }
+                }
+            }
+            val dlg = JDialog(frame, Strings.t("candidates"), true)
+            // No Skip/Cancel button: closing the window without applying
+            // counts as skipping this file.
+            var picked = false
+            dlg.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
+            dlg.addWindowListener(object : java.awt.event.WindowAdapter() {
+                override fun windowClosed(e: java.awt.event.WindowEvent) {
+                    if (!picked) onSkip?.invoke()
+                }
+            })
+            val ok = JButton(Strings.t("apply")).apply {
+                addActionListener {
+                    val idx = list.selectedIndex
+                    val opt = if (idx in 0 until model.size) model.getElementAt(idx) else null
+                    if (opt != null) picked = true
+                    dlg.dispose()
+                    if (opt != null) {
+                        val wp = progressDialog(Strings.t("working"), null, null)
+                        wp.isVisible = true
+                        thread {
+                            try {
+                                val t = opt.build()
+                                SwingUtilities.invokeLater {
+                                    wp.dispose()
+                                    // Pre-apply preview of what will change.
+                                    val old = tag ?: TagData()
+                                    val merged = if (t.partial) t.mergedOver(old) else t
+                                    val lines = TagDiff.lines(old, merged)
+                                    val msg = if (lines.isEmpty()) Strings.t("no_change")
+                                        else lines.joinToString("\n")
+                                    val okDiff = JOptionPane.showConfirmDialog(frame, msg,
+                                        Strings.t("diff_title"), JOptionPane.OK_CANCEL_OPTION)
+                                    if (okDiff == JOptionPane.OK_OPTION) onPicked(t)
+                                    else onSkip?.invoke()
+                                }
+                            } catch (e: Exception) {
+                                SwingUtilities.invokeLater { wp.dispose() }
+                                fail("${e.javaClass.simpleName}: ${e.message}")
+                                onSkip?.invoke()
+                            }
+                        }
+                    } else onSkip?.invoke()
+                }
+            }
+            val btns = JPanel().apply { add(ok) }
+            dlg.contentPane.layout = BorderLayout()
+            dlg.add(JScrollPane(list), BorderLayout.CENTER)
+            dlg.add(btns, BorderLayout.SOUTH)
+            dlg.setSize(640, 420); dlg.setLocationRelativeTo(frame)
+            // Late sources append their candidates to the open chooser.
+            chooserAppend = { more ->
+                SwingUtilities.invokeLater {
+                    if (dlg.isShowing) {
+                        val wasEmpty = model.size == 0
+                        more.forEach { model.addElement(it) }
+                        if (wasEmpty && model.size > 0) list.selectedIndex = 0
+                    }
+                }
+            }
+            dlg.isVisible = true
+        }
+    }
     thread {
         val found = LinkedHashMap<String, MbCandidate>()
         var mbError: Exception? = null
@@ -491,14 +696,65 @@ fun searchAndPick(
                 }
             } catch (e: Exception) { emptyList() }
         })
-        jobs.forEach { it.join() }
+        // Progressive results: the chooser opens as soon as some source
+        // has candidates instead of waiting for the slowest one; sources
+        // that finish later append their candidates to the open chooser.
+        // (Job keys mirror the creation order above: fingerprint first.)
+        val jobKeys = ArrayList<String>()
+        if (fpKey.isNotBlank() && localFile != null) jobKeys.add("fp")
+        if (SearchSources.mb) jobKeys.add("mb")
+        if (SearchSources.animeThemes) jobKeys.add("at")
+        if (SearchSources.itunes) jobKeys.add("itunes")
+        if (SearchSources.deezer) jobKeys.add("deezer")
+        if (SearchSources.vgmdb) jobKeys.add("vgmdb")
+        if (SearchSources.audius) jobKeys.add("audius")
+        if (SearchSources.ndl) jobKeys.add("ndl")
+        fun optsFor(key: String): List<DlgOpt> = when (key) {
+            "fp" -> buildOpts(fp = synchronized(fpCands) { fpCands.toList() })
+            "mb" -> buildOpts(mb = synchronized(found) { found.values.toList() })
+            "at" -> buildOpts(at = atSongs)
+            "itunes" -> buildOpts(itunes = itunes)
+            "deezer" -> buildOpts(deezer = deezer)
+            "vgmdb" -> buildOpts(vgmdb = vgmdb)
+            "audius" -> buildOpts(audius = audius)
+            else -> buildOpts(ndl = ndl)
+        }
+        val delivered = HashSet<String>()
+        var opened = false
+        var firstAt = 0L
+        val pending = ArrayList<DlgOpt>()
+        while (true) {
+            if (stopped.get()) return@thread
+            var allDone = delivered.size >= jobs.size
+            for (i in jobs.indices) {
+                val key = jobKeys.getOrNull(i) ?: continue
+                if (key in delivered) continue
+                if (jobs[i].isAlive) { allDone = false; continue }
+                delivered.add(key)
+                val opts = optsFor(key)
+                if (opts.isNotEmpty()) {
+                    if (firstAt == 0L) firstAt = System.currentTimeMillis()
+                    pending.addAll(opts)
+                }
+            }
+            if (!opened && pending.isNotEmpty() &&
+                (allDone || System.currentTimeMillis() - firstAt >= 1500)) {
+                opened = true
+                val initial = ArrayList(pending); pending.clear()
+                openChooser(initial)
+                while (chooserAppend == null && !stopped.get()) Thread.sleep(50)
+            } else if (opened && pending.isNotEmpty()) {
+                val more = ArrayList(pending); pending.clear()
+                chooserAppend?.invoke(more)
+            }
+            if (allDone) break
+            Thread.sleep(200)
+        }
         if (stopped.get()) return@thread
-        val cands = found.values.toList()
-        SwingUtilities.invokeLater {
-            progress?.dispose()
-            if (stopped.get()) return@invokeLater
-            if (cands.isEmpty() && fpCands.isEmpty() && atSongs.isEmpty() && itunes.isEmpty() &&
-                deezer.isEmpty() && vgmdb.isEmpty() && audius.isEmpty() && ndl.isEmpty()) {
+        if (!opened) {
+            SwingUtilities.invokeLater {
+                progress?.dispose()
+                if (stopped.get()) return@invokeLater
                 if (mbError != null) { fail("${mbError.javaClass.simpleName}: ${mbError.message}"); onStop?.invoke() }
                 else {
                     // Offer narrower re-searches before giving up.
@@ -524,179 +780,9 @@ fun searchAndPick(
                         } else onSkip?.invoke()
                     }
                 }
-                return@invokeLater
             }
-            fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            class DlgOpt(val title: String, val sub: String, val iconUrl: String?, val build: () -> TagData)
-            val options = ArrayList<DlgOpt>()
-            // Fingerprint matches first: they identify this exact recording.
-            for (c in fpCands) {
-                if (c.releases.isEmpty()) {
-                    options.add(DlgOpt(c.title, "${c.artist} · AcoustID", null) {
-                        TagData(title = c.title, artist = c.artist, mbRecordingId = c.recordingId)
-                    })
-                }
-                for (r in c.releases) {
-                    val meta = listOf(r.date.take(4), r.country).filter { it.isNotBlank() }.joinToString(", ")
-                    options.add(DlgOpt(c.title, "${c.artist} — ${r.title} ($meta) · AcoustID",
-                        MbClient.coverUrl(r.id).replace("front-250", "front-120")) {
-                        MbClient.buildTag(c, r)
-                    })
-                }
-            }
-            for (c in cands) {
-                if (c.releases.isEmpty()) {
-                    options.add(DlgOpt(c.title, c.artist, null) {
-                        TagData(title = c.title, artist = c.artist, mbRecordingId = c.recordingId)
-                    })
-                }
-                for (r in c.releases) {
-                    val meta = listOf(r.date.take(4), r.country).filter { it.isNotBlank() }.joinToString(", ")
-                    options.add(DlgOpt(c.title, "${c.artist} — ${r.title} ($meta)",
-                        MbClient.coverUrl(r.id).replace("front-250", "front-120")) {
-                        MbClient.buildTag(c, r)
-                    })
-                }
-            }
-            for (s in atSongs) {
-                val animePart = when {
-                    s.anime.isBlank() -> ""
-                    s.year.isNotBlank() -> " — ${s.anime} (${s.year})"
-                    else -> " — ${s.anime}"
-                }
-                val labelPart = if (s.themeLabel.isNotBlank()) " · ${s.themeLabel}" else ""
-                options.add(DlgOpt(s.title, "${s.artist}$animePart$labelPart · AnimeThemes", null) {
-                    s.toTag()
-                })
-            }
-            for (t in itunes) {
-                val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
-                options.add(DlgOpt(t.title, "${t.artist} — ${t.album}$yr · iTunes",
-                    t.artworkUrl.ifBlank { null }?.replace("600x600bb.jpg", "100x100bb.jpg")) {
-                    ItunesClient.buildTag(t)
-                })
-            }
-            for (t in deezer) {
-                options.add(DlgOpt(t.title, "${t.artist} — ${t.album} · Deezer",
-                    t.coverUrl.ifBlank { null }?.replace("1000x1000", "150x150")) {
-                    DeezerClient.buildTag(t)
-                })
-            }
-            for (t in vgmdb) {
-                val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
-                options.add(DlgOpt(t.title, "${t.artist} — ${t.album}$yr · VGMdb",
-                    t.coverThumbUrl.ifBlank { null }) {
-                    VgmdbClient.buildTag(t)
-                })
-            }
-            for (t in audius) {
-                val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
-                options.add(DlgOpt(t.title, "${t.artist}$yr · Audius",
-                    t.coverThumbUrl.ifBlank { null }) {
-                    AudiusClient.buildTag(t)
-                })
-            }
-            for (r in ndl) {
-                val yr = if (r.year.isNotBlank()) " (${r.year})" else ""
-                options.add(DlgOpt(r.album, "${r.artist}$yr · NDL", null) {
-                    NdlClient.buildTag(r)
-                })
-            }
-            // Cover thumbnails load in the background; rows repaint as they land.
-            val iconCache = java.util.Collections.synchronizedMap(HashMap<String, ImageIcon>())
-            val iconLoading = java.util.Collections.synchronizedSet(HashSet<String>())
-            val list = JList(options.toTypedArray()).apply {
-                selectionMode = ListSelectionModel.SINGLE_SELECTION
-                selectedIndex = 0
-            }
-            fun loadIcon(url: String) {
-                if (iconCache.containsKey(url) || !iconLoading.add(url)) return
-                thread {
-                    try {
-                        val img = javax.imageio.ImageIO.read(java.net.URL(url))
-                        if (img != null) {
-                            iconCache[url] = ImageIcon(
-                                img.getScaledInstance(48, 48, java.awt.Image.SCALE_SMOOTH))
-                            SwingUtilities.invokeLater { list.repaint() }
-                        }
-                    } catch (e: Exception) { }
-                    iconLoading.remove(url)
-                }
-            }
-            list.cellRenderer = object : ListCellRenderer<DlgOpt> {
-                override fun getListCellRendererComponent(
-                    l: JList<out DlgOpt>, value: DlgOpt, index: Int,
-                    selected: Boolean, focus: Boolean
-                ): java.awt.Component {
-                    val iconLabel = JLabel().apply {
-                        preferredSize = java.awt.Dimension(48, 48)
-                        val u = value.iconUrl
-                        if (u != null) {
-                            val ic = iconCache[u]
-                            if (ic != null) icon = ic else loadIcon(u)
-                        }
-                    }
-                    val text = JLabel(
-                        "<html><div style='width:440px'><b>${esc(value.title)}</b><br>" +
-                            "<font color='${if (darkMode) "#B8B0D0" else "#666666"}'>${esc(value.sub)}</font></div></html>")
-                    return JPanel(BorderLayout(8, 0)).apply {
-                        border = BorderFactory.createEmptyBorder(6, 8, 6, 8)
-                        add(iconLabel, BorderLayout.WEST)
-                        add(text, BorderLayout.CENTER)
-                        background = if (selected) l.selectionBackground else l.background
-                        text.foreground = if (selected) l.selectionForeground else l.foreground
-                        isOpaque = true
-                    }
-                }
-            }
-            val dlg = JDialog(frame, Strings.t("candidates"), true)
-            // No Skip/Cancel button: closing the window without applying
-            // counts as skipping this file.
-            var picked = false
-            dlg.defaultCloseOperation = JDialog.DISPOSE_ON_CLOSE
-            dlg.addWindowListener(object : java.awt.event.WindowAdapter() {
-                override fun windowClosed(e: java.awt.event.WindowEvent) {
-                    if (!picked) onSkip?.invoke()
-                }
-            })
-            val ok = JButton(Strings.t("apply")).apply {
-                addActionListener {
-                    val idx = list.selectedIndex
-                    if (idx >= 0) picked = true
-                    dlg.dispose()
-                    if (idx >= 0) {
-                        val wp = progressDialog(Strings.t("working"), null, null)
-                        wp.isVisible = true
-                        thread {
-                            try {
-                                val t = options[idx].build()
-                                SwingUtilities.invokeLater {
-                                    wp.dispose()
-                                    // Pre-apply preview of what will change.
-                                    val old = tag ?: TagData()
-                                    val merged = if (t.partial) t.mergedOver(old) else t
-                                    val lines = TagDiff.lines(old, merged)
-                                    val msg = if (lines.isEmpty()) Strings.t("no_change")
-                                        else lines.joinToString("\n")
-                                    val okDiff = JOptionPane.showConfirmDialog(frame, msg,
-                                        Strings.t("diff_title"), JOptionPane.OK_CANCEL_OPTION)
-                                    if (okDiff == JOptionPane.OK_OPTION) onPicked(t)
-                                    else onSkip?.invoke()
-                                }
-                            } catch (e: Exception) {
-                                SwingUtilities.invokeLater { wp.dispose() }
-                                fail("${e.javaClass.simpleName}: ${e.message}")
-                                onSkip?.invoke()
-                            }
-                        }
-                    } else onSkip?.invoke()
-                }
-            }
-            val btns = JPanel().apply { add(ok) }
-            dlg.contentPane.layout = BorderLayout()
-            dlg.add(JScrollPane(list), BorderLayout.CENTER)
-            dlg.add(btns, BorderLayout.SOUTH)
-            dlg.setSize(640, 420); dlg.setLocationRelativeTo(frame); dlg.isVisible = true
+        } else if (pending.isNotEmpty()) {
+            chooserAppend?.invoke(ArrayList(pending))
         }
     }
 }
@@ -906,7 +992,19 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
         }, gc); y++
         addField("title", d.title); addField("artist", d.artist); addField("album", d.album)
         addField("album_artist", d.albumArtist); addField("composer", d.composer)
-        addField("genre", d.genre); addField("year", d.year)
+        addField("genre", d.genre)
+        // Quick genre picks next to the (still freely editable) field.
+        gc.gridx = 1; gc.gridy = y
+        panel.add(JButton("▼ " + Strings.t("genre")).apply {
+            addActionListener {
+                val pick = JOptionPane.showInputDialog(this@EditDialog,
+                    Strings.t("genre"), Strings.t("genre"),
+                    JOptionPane.PLAIN_MESSAGE, null,
+                    TagData.GENRES.toTypedArray(), fields["genre"]?.text ?: "") as? String
+                if (pick != null) fields["genre"]?.text = pick
+            }
+        }, gc); y++
+        addField("year", d.year)
         addField("track", d.track); addField("track_total", d.trackTotal)
         addField("disc", d.disc); addField("disc_total", d.discTotal)
         addField("comment", d.comment); addField("isrc", d.isrc)
@@ -1212,6 +1310,29 @@ fun bulkRename() {
     }
 }
 
+/** Deletes the checked rows' files themselves (with a confirmation). */
+fun deleteSelected() {
+    val sel = checkedRows()
+    if (sel.isEmpty()) { info(Strings.t("select_some")); return }
+    val res = JOptionPane.showConfirmDialog(frame,
+        Strings.t("confirm_delete") + " (${sel.size})",
+        Strings.t("delete_file"), JOptionPane.OK_CANCEL_OPTION)
+    if (res != JOptionPane.OK_OPTION) return
+    thread {
+        var failed = 0
+        for (row in sel) {
+            try {
+                if (!row.file.delete()) throw IllegalStateException("delete returned false")
+                SwingUtilities.invokeLater { rows.remove(row) }
+            } catch (e: Exception) { failed++ }
+        }
+        SwingUtilities.invokeLater {
+            refresh()
+            if (failed > 0) fail("${Strings.t("failed")}: $failed/${sel.size}")
+        }
+    }
+}
+
 fun undoSelected() {
     val sel = checkedRows()
     if (sel.isEmpty()) { info(Strings.t("select_some")); return }
@@ -1342,8 +1463,12 @@ fun main() {
     ItunesClient.country = Locale.getDefault().country.ifBlank { "JP" }
     darkMode = props.getProperty("dark")?.toBooleanStrictOrNull() ?: false
     loadSourcePrefs()
-    // Housekeeping: keep only the newest few backups per file.
-    thread { try { Backup.prune(backupDir) } catch (e: Exception) { } }
+    // Housekeeping is deferred so startup stays light: prune old
+    // backups half a minute after launch instead of right away.
+    thread {
+        try { Thread.sleep(30_000) } catch (e: Exception) { }
+        try { Backup.prune(backupDir) } catch (e: Exception) { }
+    }
     MbClient.userAgent = "OtoTag/0.1 ( https://github.com/yyoossk/ototag )"
 
     SwingUtilities.invokeLater {
@@ -1413,7 +1538,8 @@ fun main() {
         })
         val filterBox = JComboBox(arrayOf(
             Strings.t("filter_all"), Strings.t("filter_notag"), Strings.t("filter_nocover"),
-            Strings.t("filter_error")))
+            Strings.t("filter_error"), Strings.t("filter_no_title"), Strings.t("filter_no_artist"),
+            Strings.t("filter_no_year"), Strings.t("filter_no_lyrics")))
         filterBox.selectedIndex = filterMode
         filterBox.addActionListener {
             if (filterBox.selectedIndex != filterMode) {
@@ -1465,6 +1591,7 @@ fun main() {
         actions.add(JButton(Strings.t("search_apply")).apply { vivid(this, 0xDB2777); addActionListener { searchApplySelected() } })
         actions.add(JButton(Strings.t("rename")).apply { vivid(this, 0xF97316); addActionListener { bulkRename() } })
         actions.add(JButton(Strings.t("undo")).apply { vivid(this, 0x64748B); addActionListener { undoSelected() } })
+        actions.add(JButton(Strings.t("delete_file")).apply { vivid(this, 0xBE2828); addActionListener { deleteSelected() } })
 
         val root = JPanel(BorderLayout()).apply { background = themeBg }
         root.add(top, BorderLayout.NORTH)

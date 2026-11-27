@@ -33,6 +33,17 @@ data class TagData(
     fun isBasicallyEmpty(): Boolean =
         title.isBlank() && artist.isBlank() && album.isBlank()
 
+    /** Common genre names offered as quick picks in the editor. */
+    companion object {
+        val GENRES = listOf(
+            "Rock", "Pop", "J-Pop", "J-Rock", "Anime", "Game", "Vocaloid",
+            "Jazz", "Classical", "Electronic", "Dance", "Hip-Hop", "R&B",
+            "Soul", "Funk", "Metal", "Punk", "Folk", "Country", "Blues",
+            "Reggae", "Latin", "Soundtrack", "Children", "Comedy", "World",
+            "Alternative", "Indie", "Enka"
+        )
+    }
+
     /** This tag's values, with every blank field filled in from [base]. */
     fun mergedOver(base: TagData): TagData {
         fun pick(a: String, b: String) = if (a.isNotBlank()) a else b

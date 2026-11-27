@@ -222,23 +222,88 @@ object SearchFlow {
                     }
                 } catch (e: Exception) { }
             })
-            jobs.forEach { it.join() }
+            // Progressive results: the chooser opens as soon as some
+            // source has candidates instead of waiting for the slowest
+            // one; sources that finish later append their candidates
+            // to the open chooser. (Job keys mirror the creation order.)
+            val jobKeys = ArrayList<String>()
+            if (com.yyoo.ototag.core.SearchSources.mb) jobKeys.add("mb")
+            if (com.yyoo.ototag.core.SearchSources.animeThemes) jobKeys.add("at")
+            if (com.yyoo.ototag.core.SearchSources.itunes) jobKeys.add("itunes")
+            if (com.yyoo.ototag.core.SearchSources.deezer) jobKeys.add("deezer")
+            if (com.yyoo.ototag.core.SearchSources.vgmdb) jobKeys.add("vgmdb")
+            if (com.yyoo.ototag.core.SearchSources.audius) jobKeys.add("audius")
+            if (com.yyoo.ototag.core.SearchSources.ndl) jobKeys.add("ndl")
+            if (fpKey.isNotBlank() && localFile != null) jobKeys.add("fp")
+            fun optsFor(key: String): List<Opt> = when (key) {
+                "mb" -> buildOpts(mb = synchronized(found) { found.values.toList() })
+                "fp" -> buildOpts(fp = synchronized(fpCands) { fpCands.toList() })
+                "at" -> buildOpts(at = atSongs)
+                "itunes" -> buildOpts(itunes = itunes)
+                "deezer" -> buildOpts(deezer = deezer)
+                "vgmdb" -> buildOpts(vgmdb = vgmdb)
+                "audius" -> buildOpts(audius = audius)
+                else -> buildOpts(ndl = ndl)
+            }
+            val delivered = HashSet<String>()
+            var opened = false
+            var appendFn: ((List<Opt>) -> Unit)? = null
+            var firstAt = 0L
+            val pending = ArrayList<Opt>()
+            while (true) {
+                if (stopped.get()) return@thread
+                var allDone = delivered.size >= jobs.size
+                for (i in jobs.indices) {
+                    val key = jobKeys.getOrNull(i) ?: continue
+                    if (key in delivered) continue
+                    if (jobs[i].isAlive) { allDone = false; continue }
+                    delivered.add(key)
+                    val opts = optsFor(key)
+                    if (opts.isNotEmpty()) {
+                        if (firstAt == 0L) firstAt = System.currentTimeMillis()
+                        pending.addAll(opts)
+                    }
+                }
+                if (!opened && pending.isNotEmpty() &&
+                    (allDone || System.currentTimeMillis() - firstAt >= 1500)) {
+                    opened = true
+                    val initial = ArrayList(pending); pending.clear()
+                    val latch = java.util.concurrent.CountDownLatch(1)
+                    activity.runOnUiThread {
+                        if (!stopped.get()) {
+                            progress.dismiss()
+                            appendFn = openChooser(activity, tag, initial, onSkip, bulk, onPicked)
+                        }
+                        latch.countDown()
+                    }
+                    latch.await()
+                } else if (opened && pending.isNotEmpty()) {
+                    val more = ArrayList(pending); pending.clear()
+                    activity.runOnUiThread { appendFn?.invoke(more) }
+                }
+                if (allDone) break
+                Thread.sleep(200)
+            }
             if (stopped.get()) return@thread
-            val cands = found.values.toList()
-            activity.runOnUiThread {
-                if (stopped.get()) return@runOnUiThread
-                progress.dismiss()
-                if (cands.isEmpty() && fpCands.isEmpty() && atSongs.isEmpty() && itunes.isEmpty() &&
-                    deezer.isEmpty() && vgmdb.isEmpty() && audius.isEmpty() && ndl.isEmpty()) {
+            if (!opened) {
+                activity.runOnUiThread {
+                    if (stopped.get()) return@runOnUiThread
+                    progress.dismiss()
                     if (mbError != null) {
                         Ui.failDialog(activity,
                             "${mbError.javaClass.simpleName}: ${mbError.message}")
                         onStop?.invoke()
+                    } else if (jobs.isEmpty()) {
+                        Toast.makeText(activity, Strings.t("no_results"), Toast.LENGTH_LONG).show()
+                        onSkip?.invoke()
                     } else {
                         showRetryDialog(activity, tag, parsed, localFile,
                             progressLabel, onSkip, onStop, bulk, onPicked)
                     }
-                } else showChooser(activity, tag, cands, fpCands, atSongs, itunes, deezer, vgmdb, audius, ndl, onSkip, bulk, onPicked)
+                }
+            } else if (pending.isNotEmpty()) {
+                val more = ArrayList(pending)
+                activity.runOnUiThread { appendFn?.invoke(more) }
             }
         }
     }
@@ -365,24 +430,20 @@ object SearchFlow {
         }
     }
 
-    private fun showChooser(
-        activity: Activity,
-        currentTag: TagData?,
-        cands: List<MbCandidate>,
-        fpCands: List<MbCandidate>,
-        atSongs: List<AtSong>,
-        itunes: List<ItunesTrack>,
-        deezer: List<DeezerTrack>,
-        vgmdb: List<VgmdbTrack>,
-        audius: List<AudiusTrack>,
-        ndl: List<NdlRecord>,
-        onSkip: (() -> Unit)?,
-        bulk: Boolean,
-        onPicked: (TagData) -> Unit
-    ) {
+    /** Builds the chooser rows for whichever sources are passed in. */
+    private fun buildOpts(
+        mb: List<MbCandidate> = emptyList(),
+        fp: List<MbCandidate> = emptyList(),
+        at: List<AtSong> = emptyList(),
+        itunes: List<ItunesTrack> = emptyList(),
+        deezer: List<DeezerTrack> = emptyList(),
+        vgmdb: List<VgmdbTrack> = emptyList(),
+        audius: List<AudiusTrack> = emptyList(),
+        ndl: List<NdlRecord> = emptyList()
+    ): MutableList<Opt> {
         val options = ArrayList<Opt>()
         // Fingerprint matches first: they identify this exact recording.
-        for (c in fpCands) {
+        for (c in fp) {
             if (c.releases.isEmpty()) {
                 options.add(Opt(c.title, "${c.artist} · AcoustID", null) {
                     TagData(title = c.title, artist = c.artist, mbRecordingId = c.recordingId)
@@ -397,7 +458,7 @@ object SearchFlow {
                 })
             }
         }
-        for (c in cands) {
+        for (c in mb) {
             if (c.releases.isEmpty()) {
                 options.add(Opt(c.title, c.artist, null) {
                     TagData(title = c.title, artist = c.artist, mbRecordingId = c.recordingId)
@@ -411,7 +472,7 @@ object SearchFlow {
                 })
             }
         }
-        for (s in atSongs) {
+        for (s in at) {
             val animePart = when {
                 s.anime.isBlank() -> ""
                 s.year.isNotBlank() -> " — ${s.anime} (${s.year})"
@@ -455,6 +516,21 @@ object SearchFlow {
                 NdlClient.buildTag(r)
             })
         }
+        return options
+    }
+
+    /**
+     * Shows the candidate chooser for [options] and returns a function
+     * that appends more candidates later (progressive search results).
+     */
+    private fun openChooser(
+        activity: Activity,
+        currentTag: TagData?,
+        options: MutableList<Opt>,
+        onSkip: (() -> Unit)?,
+        bulk: Boolean,
+        onPicked: (TagData) -> Unit
+    ): (List<Opt>) -> Unit {
         val d = { v: Int -> (v * activity.resources.displayMetrics.density).toInt() }
         var adapterRef: android.widget.ArrayAdapter<Opt>? = null
         val refreshIcons = { activity.runOnUiThread { adapterRef?.notifyDataSetChanged() } }
@@ -530,7 +606,16 @@ object SearchFlow {
                 }
             }
         }
+        // Late sources append their candidates to the open chooser.
+        val append: (List<Opt>) -> Unit = { more ->
+            if (more.isNotEmpty() && dlg.isShowing) {
+                for (o in more) o.iconUrl?.let { loadIcon(it, refreshIcons) }
+                options.addAll(more)
+                adapter.notifyDataSetChanged()
+            }
+        }
         dlg.show()
+        return append
     }
 
     /**

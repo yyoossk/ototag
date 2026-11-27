@@ -42,6 +42,10 @@ class MainActivity : Activity() {
             1 -> Items.list.filter { it.tag == null || it.tag!!.isBasicallyEmpty() }
             2 -> Items.list.filter { !it.hasCover }
             3 -> Items.list.filter { it.error != null }
+            4 -> Items.list.filter { it.tag?.title.isNullOrBlank() }
+            5 -> Items.list.filter { it.tag?.artist.isNullOrBlank() }
+            6 -> Items.list.filter { it.tag?.year.isNullOrBlank() }
+            7 -> Items.list.filter { it.tag?.lyrics.isNullOrBlank() }
             else -> Items.list
         }
         return when (sortMode) {
@@ -339,8 +343,10 @@ class MainActivity : Activity() {
             else android.R.style.Theme_Material_Light)
         ItunesClient.country = Locale.getDefault().country.ifBlank { "JP" }
         loadSourcePrefs()
-        // Housekeeping off the UI thread: prune old backups, drop stale copies.
+        // Housekeeping is deferred: startup stays light, and the prune +
+        // previous-session copy cleanup run half a minute later instead.
         thread {
+            try { Thread.sleep(30_000) } catch (e: Exception) { }
             try { Backup.prune(SafStore.backupDir(this)) } catch (e: Exception) { }
             SafStore.cleanupCache(this)
         }
@@ -444,7 +450,8 @@ class MainActivity : Activity() {
         val filterSpinner = Spinner(this)
         filterSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
             listOf(Strings.t("filter_all"), Strings.t("filter_notag"), Strings.t("filter_nocover"),
-                Strings.t("filter_error")))
+                Strings.t("filter_error"), Strings.t("filter_no_title"), Strings.t("filter_no_artist"),
+                Strings.t("filter_no_year"), Strings.t("filter_no_lyrics")))
         filterSpinner.setSelection(filterMode)
         filterSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(p: AdapterView<*>, v: View?, pos: Int, id: Long) {
@@ -508,6 +515,7 @@ class MainActivity : Activity() {
         barBtn(Strings.t("bar_search"), Ui.PINK) { searchApplySelected() }
         barBtn(Strings.t("bar_rename"), Ui.ORANGE) { renameSelected() }
         barBtn(Strings.t("bar_undo"), Ui.TEAL) { undoSelected() }
+        barBtn(Strings.t("delete_file"), android.graphics.Color.rgb(190, 40, 40)) { deleteSelected() }
         root.addView(bar)
 
         setContentView(root)
@@ -539,6 +547,37 @@ class MainActivity : Activity() {
         Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
 
     private var lastEdited: Item? = null
+
+    /** Deletes the checked files themselves (with a confirmation). */
+    private fun deleteSelected() {
+        val sel = checkedItems()
+        if (sel.isEmpty()) { toast(Strings.t("select_some")); return }
+        AlertDialog.Builder(this)
+            .setTitle(Strings.t("delete_file"))
+            .setMessage(Strings.t("confirm_delete") + " (${sel.size})")
+            .setPositiveButton(Strings.t("delete_file")) { _, _ ->
+                stopPlayer()
+                thread {
+                    var failed = 0
+                    var lastErr: Exception? = null
+                    for (item in sel) {
+                        try {
+                            val ok = DocumentsContract.deleteDocument(contentResolver, item.docUri)
+                            if (!ok) throw IllegalStateException("deleteDocument returned false")
+                            ThumbCache.forget(item)
+                            Items.list.remove(item)
+                        } catch (e: Exception) { failed++; lastErr = e }
+                    }
+                    runOnUiThread {
+                        adapter.notifyDataSetChanged()
+                        if (failed > 0) Ui.failDialog(this,
+                            "${lastErr?.javaClass?.simpleName}: ${lastErr?.message} ($failed/${sel.size})")
+                    }
+                }
+            }
+            .setNegativeButton(Strings.t("cancel"), null)
+            .show()
+    }
 
     private fun editSelected() {
         val sel = checkedItems()

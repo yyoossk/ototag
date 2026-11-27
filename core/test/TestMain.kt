@@ -386,9 +386,9 @@ fun main() {
         check("generations", gens.size == 3 && gens[0] > 2000L &&
             gens[1] == 2000L && gens[2] == 1000L, gens.toString())
         check("restoreAt 2000", Backup.restoreAt(song, bdir, 2000L) &&
-            song.readText() == "v2", song.readText())
+            String(song.readBytes(), Charsets.UTF_8) == "v2", String(song.readBytes(), Charsets.UTF_8))
         check("restoreAt 1500", Backup.restoreAt(song, bdir, 1500L) &&
-            song.readText() == "v1", song.readText())
+            String(song.readBytes(), Charsets.UTF_8) == "v1", String(song.readBytes(), Charsets.UTF_8))
         check("restoreAt 500 none", !Backup.restoreAt(song, bdir, 500L))
     }
 
@@ -419,6 +419,42 @@ fun main() {
         Strings.lang = "ja"
         check("filter/backup strings", Strings.t("filter_error") == "エラー" &&
             Strings.t("delete_all") == "全て削除")
+    }
+
+    // --- tag-snapshot backups: undo restores tags + lyrics + cover ---
+    run {
+        val bdir = File("testwork/snapbackups"); bdir.deleteRecursively()
+        val src = File("../spike/audio/test.mp3")
+        val song = File("testwork/snap-song.mp3"); src.copyTo(song, overwrite = true)
+        // Start from a known tag state (title, lyrics and a real cover).
+        TagService.write(song, TagService.read(song).copy(
+            title = "元のタイトル", lyrics = "元の歌詞",
+            cover = File("testdata/tiny.png").readBytes()))
+        val before = TagService.read(song)
+        val snapFile = Backup.backup(song, bdir)
+        check("snapshot is small", snapFile.length() < song.length(),
+            "${snapFile.length()} vs ${song.length()}")
+        val changed = before.copy(
+            title = "書き換えたタイトル", lyrics = "別の歌詞", cover = null)
+        TagService.write(song, changed)
+        val mid = TagService.read(song)
+        check("tags changed before undo", mid.title == "書き換えたタイトル" && mid.cover == null)
+        check("snapshot restore ok", Backup.restore(song, bdir))
+        val after = TagService.read(song)
+        check("snapshot restores tags", after.title == before.title &&
+            after.lyrics == before.lyrics &&
+            (after.cover?.size ?: -1) == (before.cover?.size ?: -2),
+            "title=${after.title} lyrics=${after.lyrics.take(10)} cover=${after.cover?.size}")
+        // Legacy whole-file backups (older builds) still restore by copy.
+        val legacyDir = File("testwork/legacybackups"); legacyDir.deleteRecursively()
+        val key = Integer.toHexString(song.absolutePath.hashCode())
+        val ldir = File(legacyDir, key); ldir.mkdirs()
+        val raw = File(ldir, "1234567890000_" + song.name)
+        src.copyTo(raw, overwrite = true)
+        TagService.write(song, before.copy(title = "また変更"))
+        check("legacy restore ok", Backup.restore(song, legacyDir) &&
+            song.readBytes().contentEquals(src.readBytes()))
+        song.delete()
     }
 
     println(if (failures == 0) "ALL PASS" else "FAILURES: $failures")
