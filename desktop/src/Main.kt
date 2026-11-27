@@ -239,16 +239,17 @@ fun searchAndPick(
                 return@invokeLater
             }
             fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            val options = ArrayList<Pair<String, () -> TagData>>()
+            class DlgOpt(val title: String, val sub: String, val iconUrl: String?, val build: () -> TagData)
+            val options = ArrayList<DlgOpt>()
             for (c in cands) {
                 if (c.releases.isEmpty()) {
-                    options.add("<html><b>${esc(c.title)}</b><br><font color='#666666'>${esc(c.artist)}</font></html>" to {
+                    options.add(DlgOpt(c.title, c.artist, null) {
                         TagData(title = c.title, artist = c.artist, mbRecordingId = c.recordingId)
                     })
                 }
                 for (r in c.releases) {
                     val meta = listOf(r.date.take(4), r.country).filter { it.isNotBlank() }.joinToString(", ")
-                    options.add("<html><b>${esc(c.title)}</b><br><font color='#666666'>${esc(c.artist)} — ${esc(r.title)} ($meta)</font></html>" to {
+                    options.add(DlgOpt(c.title, "${c.artist} — ${r.title} ($meta)", MbClient.coverUrl(r.id)) {
                         MbClient.buildTag(c, r)
                     })
                 }
@@ -256,34 +257,80 @@ fun searchAndPick(
             for (s in atSongs) {
                 val animePart = when {
                     s.anime.isBlank() -> ""
-                    s.year.isNotBlank() -> " — ${esc(s.anime)} (${s.year})"
-                    else -> " — ${esc(s.anime)}"
+                    s.year.isNotBlank() -> " — ${s.anime} (${s.year})"
+                    else -> " — ${s.anime}"
                 }
                 val labelPart = if (s.themeLabel.isNotBlank()) " · ${s.themeLabel}" else ""
-                options.add("<html><b>${esc(s.title)}</b><br><font color='#666666'>${esc(s.artist)}$animePart$labelPart · AnimeThemes</font></html>" to {
+                options.add(DlgOpt(s.title, "${s.artist}$animePart$labelPart · AnimeThemes", null) {
                     s.toTag()
                 })
             }
             for (t in itunes) {
                 val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
-                options.add("<html><b>${esc(t.title)}</b><br><font color='#666666'>${esc(t.artist)} — ${esc(t.album)}$yr · iTunes</font></html>" to {
+                options.add(DlgOpt(t.title, "${t.artist} — ${t.album}$yr · iTunes",
+                    t.artworkUrl.ifBlank { null }) {
                     ItunesClient.buildTag(t)
                 })
             }
             for (t in deezer) {
-                options.add("<html><b>${esc(t.title)}</b><br><font color='#666666'>${esc(t.artist)} — ${esc(t.album)} · Deezer</font></html>" to {
+                options.add(DlgOpt(t.title, "${t.artist} — ${t.album} · Deezer",
+                    t.coverUrl.ifBlank { null }) {
                     DeezerClient.buildTag(t)
                 })
             }
             for (t in vgmdb) {
                 val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
-                options.add("<html><b>${esc(t.title)}</b><br><font color='#666666'>${esc(t.artist)} — ${esc(t.album)}$yr · VGMdb</font></html>" to {
+                options.add(DlgOpt(t.title, "${t.artist} — ${t.album}$yr · VGMdb",
+                    t.coverUrl.ifBlank { null }) {
                     VgmdbClient.buildTag(t)
                 })
             }
-            val list = JList(options.map { it.first }.toTypedArray()).apply {
+            // Cover thumbnails load in the background; rows repaint as they land.
+            val iconCache = java.util.Collections.synchronizedMap(HashMap<String, ImageIcon>())
+            val iconLoading = java.util.Collections.synchronizedSet(HashSet<String>())
+            val list = JList(options.toTypedArray()).apply {
                 selectionMode = ListSelectionModel.SINGLE_SELECTION
                 selectedIndex = 0
+            }
+            fun loadIcon(url: String) {
+                if (iconCache.containsKey(url) || !iconLoading.add(url)) return
+                thread {
+                    try {
+                        val img = javax.imageio.ImageIO.read(java.net.URL(url))
+                        if (img != null) {
+                            iconCache[url] = ImageIcon(
+                                img.getScaledInstance(48, 48, java.awt.Image.SCALE_SMOOTH))
+                            SwingUtilities.invokeLater { list.repaint() }
+                        }
+                    } catch (e: Exception) { }
+                    iconLoading.remove(url)
+                }
+            }
+            list.cellRenderer = object : ListCellRenderer<DlgOpt> {
+                override fun getListCellRendererComponent(
+                    l: JList<out DlgOpt>, value: DlgOpt, index: Int,
+                    selected: Boolean, focus: Boolean
+                ): java.awt.Component {
+                    val iconLabel = JLabel().apply {
+                        preferredSize = java.awt.Dimension(48, 48)
+                        val u = value.iconUrl
+                        if (u != null) {
+                            val ic = iconCache[u]
+                            if (ic != null) icon = ic else loadIcon(u)
+                        }
+                    }
+                    val text = JLabel(
+                        "<html><div style='width:440px'><b>${esc(value.title)}</b><br>" +
+                            "<font color='#666666'>${esc(value.sub)}</font></div></html>")
+                    return JPanel(BorderLayout(8, 0)).apply {
+                        border = BorderFactory.createEmptyBorder(6, 8, 6, 8)
+                        add(iconLabel, BorderLayout.WEST)
+                        add(text, BorderLayout.CENTER)
+                        background = if (selected) l.selectionBackground else l.background
+                        text.foreground = if (selected) l.selectionForeground else l.foreground
+                        isOpaque = true
+                    }
+                }
             }
             val dlg = JDialog(frame, Strings.t("candidates"), true)
             val ok = JButton(Strings.t("apply")).apply {
@@ -295,7 +342,7 @@ fun searchAndPick(
                         wp.isVisible = true
                         thread {
                             try {
-                                val t = options[idx].second()
+                                val t = options[idx].build()
                                 SwingUtilities.invokeLater { wp.dispose(); onPicked(t) }
                             } catch (e: Exception) {
                                 SwingUtilities.invokeLater { wp.dispose() }

@@ -204,8 +204,8 @@ object SearchFlow {
         return dlg
     }
 
-    /** One candidate row: big title line, smaller artist/album line under it. */
-    private class Opt(val title: String, val sub: String, val build: () -> TagData)
+    /** One candidate row: cover thumbnail, big title, smaller artist/album line. */
+    private class Opt(val title: String, val sub: String, val iconUrl: String?, val build: () -> TagData)
 
     private fun showChooser(
         activity: Activity,
@@ -220,14 +220,14 @@ object SearchFlow {
         val options = ArrayList<Opt>()
         for (c in cands) {
             if (c.releases.isEmpty()) {
-                options.add(Opt(c.title, c.artist) {
+                options.add(Opt(c.title, c.artist, null) {
                     TagData(title = c.title, artist = c.artist, mbRecordingId = c.recordingId)
                 })
             }
             for (r in c.releases) {
                 val yr = r.date.take(4)
                 val meta = listOf(yr, r.country).filter { it.isNotBlank() }.joinToString(", ")
-                options.add(Opt(c.title, "${c.artist} — ${r.title} ($meta)") {
+                options.add(Opt(c.title, "${c.artist} — ${r.title} ($meta)", MbClient.coverUrl(r.id)) {
                     MbClient.buildTag(c, r)
                 })
             }
@@ -239,48 +239,85 @@ object SearchFlow {
                 else -> " — ${s.anime}"
             }
             val labelPart = if (s.themeLabel.isNotBlank()) " · ${s.themeLabel}" else ""
-            options.add(Opt(s.title, "${s.artist}$animePart$labelPart · AnimeThemes") {
+            options.add(Opt(s.title, "${s.artist}$animePart$labelPart · AnimeThemes", null) {
                 s.toTag()
             })
         }
         for (t in itunes) {
             val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
-            options.add(Opt(t.title, "${t.artist} — ${t.album}$yr · iTunes") {
+            options.add(Opt(t.title, "${t.artist} — ${t.album}$yr · iTunes",
+                t.artworkUrl.ifBlank { null }) {
                 ItunesClient.buildTag(t)
             })
         }
         for (t in deezer) {
-            options.add(Opt(t.title, "${t.artist} — ${t.album} · Deezer") {
+            options.add(Opt(t.title, "${t.artist} — ${t.album} · Deezer",
+                t.coverUrl.ifBlank { null }) {
                 DeezerClient.buildTag(t)
             })
         }
         for (t in vgmdb) {
             val yr = if (t.year.isNotBlank()) " (${t.year})" else ""
-            options.add(Opt(t.title, "${t.artist} — ${t.album}$yr · VGMdb") {
+            options.add(Opt(t.title, "${t.artist} — ${t.album}$yr · VGMdb",
+                t.coverUrl.ifBlank { null }) {
                 VgmdbClient.buildTag(t)
             })
         }
         val d = { v: Int -> (v * activity.resources.displayMetrics.density).toInt() }
+        // Cover thumbnails load in the background; rows refresh as they land.
+        val iconCache = java.util.Collections.synchronizedMap(
+            HashMap<String, android.graphics.Bitmap>())
+        val iconLoading = java.util.Collections.synchronizedSet(HashSet<String>())
+        var adapterRef: android.widget.ArrayAdapter<Opt>? = null
+        fun loadIcon(url: String) {
+            if (iconCache.containsKey(url) || !iconLoading.add(url)) return
+            thread {
+                try {
+                    val bmp = java.net.URL(url).openStream().use {
+                        android.graphics.BitmapFactory.decodeStream(it)
+                    }
+                    if (bmp != null) iconCache[url] = bmp
+                } catch (e: Exception) { }
+                iconLoading.remove(url)
+                activity.runOnUiThread { adapterRef?.notifyDataSetChanged() }
+            }
+        }
         val adapter = object : android.widget.ArrayAdapter<Opt>(activity, 0, options) {
             override fun getView(pos: Int, convertView: android.view.View?, parent: android.view.ViewGroup): android.view.View {
                 val o = options[pos]
                 val row = android.widget.LinearLayout(activity).apply {
-                    orientation = android.widget.LinearLayout.VERTICAL
-                    setPadding(d(16), d(10), d(16), d(10))
+                    orientation = android.widget.LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(d(12), d(10), d(16), d(10))
                 }
-                row.addView(android.widget.TextView(activity).apply {
+                row.addView(android.widget.ImageView(activity).apply {
+                    layoutParams = android.widget.LinearLayout.LayoutParams(d(52), d(52))
+                    scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                    val url = o.iconUrl
+                    val bmp = if (url != null) iconCache[url] else null
+                    if (bmp != null) setImageBitmap(bmp)
+                    else {
+                        background = Ui.coverPlaceholder(activity)
+                        if (url != null) loadIcon(url)
+                    }
+                })
+                val texts = android.widget.LinearLayout(activity).apply {
+                    orientation = android.widget.LinearLayout.VERTICAL
+                    setPadding(d(12), 0, 0, 0)
+                }
+                texts.addView(android.widget.TextView(activity).apply {
                     text = o.title; textSize = 16f
                     setTextColor(Ui.INK)
-                    setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.END
                 })
-                row.addView(android.widget.TextView(activity).apply {
+                texts.addView(android.widget.TextView(activity).apply {
                     text = o.sub; textSize = 13f
                     setTextColor(Ui.SUB)
-                    setSingleLine(true); ellipsize = android.text.TextUtils.TruncateAt.END
                 })
+                row.addView(texts)
                 return row
             }
         }
+        adapterRef = adapter
         val listView = android.widget.ListView(activity).apply {
             this.adapter = adapter
             dividerHeight = 1

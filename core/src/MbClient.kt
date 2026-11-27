@@ -126,6 +126,9 @@ object MbClient {
         return out
     }
 
+    /** Cover Art Archive thumbnail URL for a release (front-250). */
+    fun coverUrl(releaseId: String): String = "$caaBase/release/$releaseId/front-250"
+
     /** Builds full tag data from a chosen candidate + release. */
     fun buildTag(cand: MbCandidate, rel: MbReleaseRef): TagData {
         val url = "$mbBase/ws/2/release/${rel.id}?inc=recordings+artist-credits+genres&fmt=json"
