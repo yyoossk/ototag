@@ -61,6 +61,14 @@ object ItunesClient {
 
     /** Searches songs by free text (title, artist, or both). */
     fun search(query: String): List<ItunesTrack> {
+        val key = "itunes|$country|" + query.trim().lowercase()
+        SearchCache.get<List<ItunesTrack>>(key)?.let { return it }
+        val r = searchRaw(query)
+        if (r.isNotEmpty()) SearchCache.put(key, r)
+        return r
+    }
+
+    private fun searchRaw(query: String): List<ItunesTrack> {
         if (query.isBlank()) return emptyList()
         val url = "$base/search?term=${enc(query)}&country=${enc(country)}" +
             "&entity=song&limit=25"

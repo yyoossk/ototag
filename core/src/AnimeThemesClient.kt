@@ -56,6 +56,14 @@ object AnimeThemesClient {
      * One song used by several anime yields one entry per anime/theme slot.
      */
     fun searchSongs(query: String): List<AtSong> {
+        val key = "at|" + query.trim().lowercase()
+        SearchCache.get<List<AtSong>>(key)?.let { return it }
+        val r = searchSongsRaw(query)
+        if (r.isNotEmpty()) SearchCache.put(key, r)
+        return r
+    }
+
+    private fun searchSongsRaw(query: String): List<AtSong> {
         if (query.isBlank()) return emptyList()
         val url = "$base/song?q=${enc(query)}" +
             "&include=artists,animethemes.anime&page[size]=15"

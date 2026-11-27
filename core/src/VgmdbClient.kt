@@ -86,6 +86,14 @@ object VgmdbClient {
      * candidates. Album detail fetches are capped so a search stays quick.
      */
     fun search(query: String): List<VgmdbTrack> {
+        val key = "vgmdb|" + query.trim().lowercase()
+        SearchCache.get<List<VgmdbTrack>>(key)?.let { return it }
+        val r = searchRaw(query)
+        if (r.isNotEmpty()) SearchCache.put(key, r)
+        return r
+    }
+
+    private fun searchRaw(query: String): List<VgmdbTrack> {
         if (query.isBlank()) return emptyList()
         val root = JsonParser(
             String(get("$base/search?q=${enc(query)}"), Charsets.UTF_8)).parse().asObj()

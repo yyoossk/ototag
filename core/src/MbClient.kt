@@ -90,6 +90,7 @@ object MbClient {
     }
 
     private fun searchRecordings(url: String): List<MbCandidate> {
+        SearchCache.get<List<MbCandidate>>(url)?.let { return it }
         val root = JsonParser(String(get(url), Charsets.UTF_8)).parse().asObj()
         val out = ArrayList<MbCandidate>()
         for (r in root["recordings"].asArr()) {
@@ -123,6 +124,7 @@ object MbClient {
             out.add(MbCandidate(ro["id"].asStr(), ro["title"].asStr(), artistCredit,
                 ro["score"].asInt(), (ro["length"] as? Double)?.toLong() ?: 0, releases))
         }
+        if (out.isNotEmpty()) SearchCache.put(url, out)
         return out
     }
 

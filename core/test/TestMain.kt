@@ -137,6 +137,17 @@ fun main() {
     val itTag = ItunesClient.buildTag(idolT!!)
     check("itunes tag + cover", itTag.title == "アイドル" && itTag.cover != null && itTag.cover!!.size > 1000 && !itTag.coverFetchFailed)
 
+    // --- session search cache: the same query must not fetch twice ---
+    var ituFetches = 0
+    ItunesClient.fetcher = { url ->
+        if (url.contains("itunes.apple.com")) { ituFetches++; File("testdata/itunes-search.json").readBytes() }
+        else File("testdata/cover.jpg").readBytes()
+    }
+    ItunesClient.search("cache probe song")
+    ItunesClient.search("cache probe song")
+    ItunesClient.search("Cache Probe Song")
+    check("search cache hit", ituFetches == 1, ituFetches.toString())
+
     // --- self-update check (real GitHub API response recorded with curl) ---
     UpdateChecker.fetcher = { url ->
         if (url.contains("api.github.com")) File("testdata/gh-latest.json").readBytes()

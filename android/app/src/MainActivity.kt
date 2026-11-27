@@ -30,6 +30,39 @@ class MainActivity : Activity() {
     private lateinit var adapter: ItemAdapter
     private var player: MediaPlayer? = null
     private var playingItem: Item? = null
+    /** List filter: 0 = all, 1 = no tags, 2 = no cover. */
+    private var filterMode: Int = 0
+    private val thumbExecutor = java.util.concurrent.Executors.newFixedThreadPool(2)
+
+    /** The items the list currently shows, after the filter. */
+    private fun shownItems(): List<Item> = when (filterMode) {
+        1 -> Items.list.filter { it.tag == null || it.tag!!.isBasicallyEmpty() }
+        2 -> Items.list.filter { it.tag?.cover == null }
+        else -> Items.list
+    }
+
+    /** Settings dialog: the embedded-cover size cap (default: no limit). */
+    private fun showSettings() {
+        val caps = listOf(0, 2000, 1200, 800)
+        val labels = listOf(Strings.t("cap_none"), "2000px", "1200px", "800px")
+        val cur = prefs.getInt("cover_cap", 0)
+        val layout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(40, 20, 40, 0)
+        }
+        layout.addView(TextView(this).apply { text = Strings.t("cover_cap") })
+        val spinner = Spinner(this)
+        spinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
+        spinner.setSelection(caps.indexOf(cur).coerceAtLeast(0))
+        layout.addView(spinner)
+        AlertDialog.Builder(this)
+            .setTitle(Strings.t("settings"))
+            .setView(layout)
+            .setPositiveButton(Strings.t("ok")) { _, _ ->
+                prefs.edit().putInt("cover_cap", caps[spinner.selectedItemPosition]).apply()
+            }
+            .setNegativeButton(Strings.t("cancel"), null)
+            .show()
+    }
 
     /** Tapping a row's thumbnail plays that file; tapping again stops. */
     private fun togglePlay(item: Item) {
@@ -260,6 +293,10 @@ class MainActivity : Activity() {
                 startActivity(Intent(this@MainActivity, HistoryActivity::class.java))
             }
         })
+        header.addView(Button(this).apply {
+            text = Strings.t("settings"); Ui.styleButton(this, Ui.MAGENTA)
+            setOnClickListener { showSettings() }
+        })
         header.addView(TextView(this).apply {
             text = Strings.t("language"); textSize = 13f
             setTextColor(Ui.SUB)
@@ -312,6 +349,25 @@ class MainActivity : Activity() {
             startActivityForResult(i, REQ_FILES)
         }
         root.addView(top)
+
+        // filter row: all / no tags / no cover
+        val filterRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), 0, dp(12), 0)
+        }
+        val filterSpinner = Spinner(this)
+        filterSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
+            listOf(Strings.t("filter_all"), Strings.t("filter_notag"), Strings.t("filter_nocover")))
+        filterSpinner.setSelection(filterMode)
+        filterSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>, v: View?, pos: Int, id: Long) {
+                if (pos != filterMode) { filterMode = pos; adapter.notifyDataSetChanged() }
+            }
+            override fun onNothingSelected(p: AdapterView<*>) {}
+        }
+        filterRow.addView(filterSpinner)
+        root.addView(filterRow)
 
         adapter = ItemAdapter()
         listView = ListView(this).apply {
@@ -403,8 +459,14 @@ class MainActivity : Activity() {
                 ) { picked ->
                     // Partial sources (Audius / NDL) only fill what they know;
                     // keep the file's own values for everything else.
-                    val newTag = if (picked.partial)
+                    val merged = if (picked.partial)
                         picked.mergedOver(item.tag ?: TagData()) else picked
+                    // The cover cap applies to covers the candidate brought;
+                    // a cover the file already had is left as it is.
+                    val newTag = if (picked.cover != null)
+                        merged.copy(cover = SafStore.capCover(merged.cover,
+                            prefs.getInt("cover_cap", 0)))
+                    else merged
                     thread {
                         var ok = false
                         try {
@@ -488,7 +550,11 @@ class MainActivity : Activity() {
             text = Strings.t("bulk_cover")
             setOnClickListener {
                 pendingImagePick = { uri ->
-                    try { coverBytes = SafStore.normalizeCover(this@MainActivity, uri) } catch (e: Exception) { }
+                    try {
+                        coverBytes = SafStore.capCover(
+                            SafStore.normalizeCover(this@MainActivity, uri),
+                            prefs.getInt("cover_cap", 0))
+                    } catch (e: Exception) { }
                 }
                 val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
                     addCategory(Intent.CATEGORY_OPENABLE); type = "image/*"
@@ -706,11 +772,11 @@ class MainActivity : Activity() {
     }
 
     inner class ItemAdapter : BaseAdapter() {
-        override fun getCount() = Items.list.size
-        override fun getItem(pos: Int) = Items.list[pos]
+        override fun getCount() = shownItems().size
+        override fun getItem(pos: Int) = shownItems()[pos]
         override fun getItemId(pos: Int) = pos.toLong()
         override fun getView(pos: Int, convertView: View?, parent: ViewGroup?): View {
-            val item = Items.list[pos]
+            val item = shownItems()[pos]
             val d = { v: Int -> (v * resources.displayMetrics.density).toInt() }
             // white rounded card on the lavender background
             val outer = LinearLayout(this@MainActivity).apply {
@@ -733,9 +799,21 @@ class MainActivity : Activity() {
                     setImageResource(android.R.drawable.ic_media_pause)
                     background = Ui.coverPlaceholder(this@MainActivity)
                 } else {
-                    val bmp = item.thumbnail()
+                    // decode thumbnails off the UI thread; the row refreshes
+                    // when the bitmap is ready (and it is cached afterwards)
+                    val bmp = item.peekThumbnail()
                     if (bmp != null) setImageBitmap(bmp)
-                    else setImageBitmap(Ui.noCoverBitmap())
+                    else {
+                        setImageBitmap(Ui.noCoverBitmap())
+                        if (item.tag?.cover != null && !item.thumbLoading) {
+                            item.thumbLoading = true
+                            thumbExecutor.execute {
+                                try { item.thumbnail() } catch (e: Exception) { }
+                                item.thumbLoading = false
+                                runOnUiThread { adapter.notifyDataSetChanged() }
+                            }
+                        }
+                    }
                 }
                 setOnClickListener { togglePlay(item) }
             }

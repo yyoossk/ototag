@@ -44,6 +44,14 @@ object AudiusClient {
     private fun enc(s: String): String = URLEncoder.encode(s, "UTF-8")
 
     fun search(query: String): List<AudiusTrack> {
+        val key = "audius|" + query.trim().lowercase()
+        SearchCache.get<List<AudiusTrack>>(key)?.let { return it }
+        val r = searchRaw(query)
+        if (r.isNotEmpty()) SearchCache.put(key, r)
+        return r
+    }
+
+    private fun searchRaw(query: String): List<AudiusTrack> {
         if (query.isBlank()) return emptyList()
         val root = JsonParser(
             String(get("$base/v1/tracks/search?query=${enc(query)}&app_name=OtoTag"),

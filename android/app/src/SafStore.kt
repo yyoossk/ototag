@@ -16,8 +16,17 @@ class Item(
     var error: String? = null
 ) {
     val ext: String get() = name.substringAfterLast('.', "").lowercase()
+    /** Folder document (tree picks only) — lets us create sibling files like .lrc. */
+    var parentUri: Uri? = null
     var thumb: android.graphics.Bitmap? = null
     var thumbFor: Int = 0
+    var thumbLoading: Boolean = false
+
+    /** The cached thumbnail without decoding anything (null when not ready). */
+    fun peekThumbnail(): android.graphics.Bitmap? {
+        val cover = tag?.cover ?: return null
+        return if (thumb != null && thumbFor == cover.contentHashCode()) thumb else null
+    }
 
     /** Decoded list thumbnail for the current cover bytes (cached by content hash). */
     fun thumbnail(): android.graphics.Bitmap? {
@@ -98,6 +107,45 @@ object SafStore {
         return out.toByteArray()
     }
 
+    /**
+     * Downscales cover bytes so the long edge is at most [cap] px and
+     * re-encodes as JPEG. A cap of 0 (or a cover already small enough)
+     * returns the bytes unchanged — the default stays "no limit".
+     */
+    fun capCover(bytes: ByteArray?, cap: Int): ByteArray? {
+        if (bytes == null || cap <= 0) return bytes
+        val bmp = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            ?: return bytes
+        val maxDim = maxOf(bmp.width, bmp.height)
+        if (maxDim <= cap) return bytes
+        val ratio = cap.toFloat() / maxDim
+        val scaled = android.graphics.Bitmap.createScaledBitmap(
+            bmp,
+            (bmp.width * ratio).toInt().coerceAtLeast(1),
+            (bmp.height * ratio).toInt().coerceAtLeast(1), true)
+        val out = java.io.ByteArrayOutputStream()
+        scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, out)
+        return out.toByteArray()
+    }
+
+    /**
+     * Saves synced lyrics as a sibling "<name>.lrc" document (tree picks
+     * only — a single-file pick gives no writable parent). Returns true
+     * when the file was written.
+     */
+    fun saveLrc(ctx: Context, item: Item, synced: String): Boolean {
+        val parent = item.parentUri ?: return false
+        if (synced.isBlank()) return false
+        val lrcName = item.name.substringBeforeLast('.') + ".lrc"
+        return try {
+            val uri = DocumentsContract.createDocument(
+                ctx.contentResolver, parent, "text/plain", lrcName) ?: return false
+            ctx.contentResolver.openOutputStream(uri, "wt")?.use { out ->
+                out.write(synced.toByteArray(Charsets.UTF_8))
+            } != null
+        } catch (e: Exception) { false }
+    }
+
     fun rename(ctx: Context, item: Item, newName: String): Boolean {
         val newUri = try {
             DocumentsContract.renameDocument(ctx.contentResolver, item.docUri, newName)
@@ -136,7 +184,9 @@ object SafStore {
                     walk(ctx, treeUri, id, out, depth + 1)
                 } else if (name.substringAfterLast('.', "").lowercase() in AUDIO_EXTS) {
                     val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
-                    out.add(Item(docUri, name))
+                    val item = Item(docUri, name)
+                    item.parentUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, parentId)
+                    out.add(item)
                 }
             }
         }

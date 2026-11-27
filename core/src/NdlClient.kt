@@ -65,6 +65,14 @@ object NdlClient {
     }
 
     fun search(query: String): List<NdlRecord> {
+        val key = "ndl|" + query.trim().lowercase()
+        SearchCache.get<List<NdlRecord>>(key)?.let { return it }
+        val r = searchRaw(query)
+        if (r.isNotEmpty()) SearchCache.put(key, r)
+        return r
+    }
+
+    private fun searchRaw(query: String): List<NdlRecord> {
         if (query.isBlank()) return emptyList()
         val xml = String(get("$base?q=${enc(query)}&cnt=20"), Charsets.UTF_8)
         val out = ArrayList<NdlRecord>()

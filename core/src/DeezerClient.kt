@@ -52,6 +52,14 @@ object DeezerClient {
 
     /** Searches songs by free text (title, artist, or both). */
     fun search(query: String): List<DeezerTrack> {
+        val key = "deezer|" + query.trim().lowercase()
+        SearchCache.get<List<DeezerTrack>>(key)?.let { return it }
+        val r = searchRaw(query)
+        if (r.isNotEmpty()) SearchCache.put(key, r)
+        return r
+    }
+
+    private fun searchRaw(query: String): List<DeezerTrack> {
         if (query.isBlank()) return emptyList()
         val url = "$base/search?q=${enc(query)}&limit=25"
         val root = JsonParser(String(get(url), Charsets.UTF_8)).parse().asObj()

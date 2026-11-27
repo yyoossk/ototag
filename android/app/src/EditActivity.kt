@@ -16,6 +16,8 @@ class EditActivity : Activity() {
     private var item: Item? = null
     private var coverBytes: ByteArray? = null
     private var coverRemoved = false
+    /** True when the cover was replaced here (pick or search), so the size cap applies. */
+    private var coverChanged = false
     private var player: MediaPlayer? = null
     private var playBtn: Button? = null
     private var lyricsInput: EditText? = null
@@ -111,7 +113,7 @@ class EditActivity : Activity() {
                 val cur = collectFields()
                 val parsed = NameParser.parse(File(itemName))
                 SearchFlow.start(this@EditActivity, cur, parsed) { picked ->
-                    fillFields(picked)
+                    fillFields(picked, fromSearch = true)
                     // clear centred confirmation of what was filled in from the candidate
                     val msg = buildString {
                         append(picked.title)
@@ -167,7 +169,7 @@ class EditActivity : Activity() {
         super.onDestroy()
     }
 
-    private fun fillFields(d: TagData) {
+    private fun fillFields(d: TagData, fromSearch: Boolean = false) {
         // Partial candidates (Audius / NDL) must not blank out fields they
         // do not know; full candidates replace everything as before.
         fun set(k: String, v: String) {
@@ -189,6 +191,7 @@ class EditActivity : Activity() {
         if (!d.partial || d.lyrics.isNotBlank()) lyricsInput?.setText(d.lyrics)
         if (d.cover != null) {
             coverBytes = d.cover; coverRemoved = false
+            if (fromSearch) coverChanged = true
             coverView.setImageBitmap(BitmapFactory.decodeByteArray(d.cover, 0, d.cover!!.size))
         }
         // keep MBIDs across a search-pick so they get written on save
@@ -208,9 +211,16 @@ class EditActivity : Activity() {
         getSharedPreferences("ototag", MODE_PRIVATE).edit()
             .putString("mxm_key", key).apply()
         thread {
-            var text: String? = try {
-                LrclibClient.fetchBest(title, artist, album, dur)?.plainLyrics
+            val entry = try {
+                LrclibClient.fetchBest(title, artist, album, dur)
             } catch (e: Exception) { null }
+            var text: String? = entry?.plainLyrics
+            // LRCLIB's timestamped lyrics also land next to the file as .lrc
+            var lrcSaved = false
+            val it = item
+            if (entry != null && entry.syncedLyrics.isNotBlank() && it != null) {
+                lrcSaved = SafStore.saveLrc(this, it, entry.syncedLyrics)
+            }
             if (text == null) {
                 text = LyricsOvhClient.fetchLyrics(artist, title)
             }
@@ -224,7 +234,9 @@ class EditActivity : Activity() {
             runOnUiThread {
                 if (found != null) {
                     lyricsInput?.setText(found)
-                    Toast.makeText(this, Strings.t("done"), Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this,
+                        Strings.t(if (lrcSaved) "lrc_saved" else "done"),
+                        Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(this, Strings.t("no_lyrics"), Toast.LENGTH_LONG).show()
                 }
@@ -259,7 +271,7 @@ class EditActivity : Activity() {
             val uri = data?.data ?: return
             try {
                 coverBytes = SafStore.normalizeCover(this, uri)
-                coverRemoved = false
+                coverRemoved = false; coverChanged = true
                 coverBytes?.let { coverView.setImageBitmap(BitmapFactory.decodeByteArray(it, 0, it.size)) }
             } catch (e: Exception) { }
         }
@@ -267,7 +279,13 @@ class EditActivity : Activity() {
 
     private fun save() {
         val it = item ?: return
-        val d = collectFields()
+        val collected = collectFields()
+        // The size cap applies only to a cover replaced in this editor;
+        // the file's own cover passes through untouched.
+        val d = if (coverChanged && collected.cover != null)
+            collected.copy(cover = SafStore.capCover(collected.cover,
+                getSharedPreferences("ototag", MODE_PRIVATE).getInt("cover_cap", 0)))
+        else collected
         val newBase = Renamer.sanitize(filenameInput.text.toString())
         Toast.makeText(this, Strings.t("working"), Toast.LENGTH_SHORT).show()
         thread {

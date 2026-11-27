@@ -40,14 +40,63 @@ class Row(val file: File) {
         if (icon != null && iconFor == h) return icon
         iconFor = h
         icon = try {
-            val img = ImageIO.read(cover.inputStream())
-            if (img == null) null else ImageIcon(img.getScaledInstance(40, 40, Image.SCALE_SMOOTH))
+            // Subsampled decode: a 40px icon must not decode a 3000px cover.
+            val iis = ImageIO.createImageInputStream(cover.inputStream())
+            val readers = ImageIO.getImageReaders(iis)
+            if (!readers.hasNext()) null
+            else {
+                val reader = readers.next()
+                reader.input = iis
+                val w = reader.getWidth(0); val hh = reader.getHeight(0)
+                var sub = 1
+                while (w / sub > 80 || hh / sub > 80) sub *= 2
+                val param = reader.defaultReadParam
+                if (sub > 1) param.setSourceSubsampling(sub, sub, 0, 0)
+                val img = reader.read(0, param)
+                reader.dispose()
+                ImageIcon(img.getScaledInstance(40, 40, Image.SCALE_SMOOTH))
+            }
         } catch (e: Exception) { null }
         return icon
     }
 }
 
 val rows = mutableListOf<Row>()
+
+/** List filter: 0 = all, 1 = no tags, 2 = no cover. */
+var filterMode = 0
+
+fun shownRows(): List<Row> = when (filterMode) {
+    1 -> rows.filter { it.tag == null || it.tag!!.isBasicallyEmpty() }
+    2 -> rows.filter { it.tag?.cover == null }
+    else -> rows
+}
+
+/** The embedded-cover size cap from the settings (0 = no limit, the default). */
+fun coverCapPx(): Int = loadProps().getProperty("cover_cap")?.toIntOrNull() ?: 0
+
+/**
+ * Downscales cover bytes so the long edge is at most [cap] px and
+ * re-encodes as JPEG. A cap of 0 (or a cover already small enough)
+ * returns the bytes unchanged.
+ */
+fun capCoverBytes(bytes: ByteArray?, cap: Int): ByteArray? {
+    if (bytes == null || cap <= 0) return bytes
+    val img = try { ImageIO.read(bytes.inputStream()) } catch (e: Exception) { null }
+        ?: return bytes
+    val maxDim = maxOf(img.width, img.height)
+    if (maxDim <= cap) return bytes
+    val ratio = cap.toDouble() / maxDim
+    val w = (img.width * ratio).toInt().coerceAtLeast(1)
+    val h = (img.height * ratio).toInt().coerceAtLeast(1)
+    val scaled = java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB)
+    val g = scaled.createGraphics()
+    g.drawImage(img.getScaledInstance(w, h, Image.SCALE_SMOOTH), 0, 0, null)
+    g.dispose()
+    val out = java.io.ByteArrayOutputStream()
+    ImageIO.write(scaled, "jpg", out)
+    return out.toByteArray()
+}
 val backupDir: File by lazy {
     val base = System.getenv("LOCALAPPDATA")?.let { File(it, "OtoTag") }
         ?: File(System.getProperty("user.home"), ".ototag")
@@ -75,7 +124,7 @@ lateinit var table: JTable
 lateinit var model: RowModel
 
 class RowModel : AbstractTableModel() {
-    override fun getRowCount() = rows.size
+    override fun getRowCount() = shownRows().size
     override fun getColumnCount() = 7
     override fun getColumnName(c: Int) = when (c) {
         2 -> Strings.t("filename"); 3 -> Strings.t("title"); 4 -> Strings.t("artist")
@@ -88,16 +137,16 @@ class RowModel : AbstractTableModel() {
     }
     override fun isCellEditable(r: Int, c: Int) = c == 0
     override fun getValueAt(r: Int, c: Int): Any = when (c) {
-        0 -> rows[r].checked
-        1 -> rows[r].coverIcon() ?: noCoverIcon
-        2 -> rows[r].file.name
-        3 -> rows[r].tag?.title ?: ""
-        4 -> rows[r].tag?.artist ?: ""
-        5 -> rows[r].tag?.album ?: ""
-        else -> rows[r].status
+        0 -> shownRows()[r].checked
+        1 -> shownRows()[r].coverIcon() ?: noCoverIcon
+        2 -> shownRows()[r].file.name
+        3 -> shownRows()[r].tag?.title ?: ""
+        4 -> shownRows()[r].tag?.artist ?: ""
+        5 -> shownRows()[r].tag?.album ?: ""
+        else -> shownRows()[r].status
     }
     override fun setValueAt(v: Any?, r: Int, c: Int) {
-        if (c == 0) { rows[r].checked = v as Boolean; fireTableCellUpdated(r, c) }
+        if (c == 0) { shownRows()[r].checked = v as Boolean; fireTableCellUpdated(r, c) }
     }
 }
 
@@ -112,6 +161,7 @@ fun addFiles(files: List<File>, startChecked: Boolean = false) {
             // Files added one by one start out checked; folder loads do not.
             val row = Row(f).apply { checked = startChecked }
             try { row.tag = TagService.read(f) } catch (e: Exception) { row.status = e.message ?: "" }
+            try { row.coverIcon() } catch (e: Exception) { } // warm the icon cache off the EDT
             rows.add(row)
         }
         refresh()
@@ -446,11 +496,30 @@ fun showHistory() {
     dlg.isVisible = true
 }
 
+/** Settings dialog: the embedded-cover size cap (default: no limit). */
+fun showSettings() {
+    val caps = listOf(0, 2000, 1200, 800)
+    val labels = arrayOf(Strings.t("cap_none"), "2000px", "1200px", "800px")
+    val box = JComboBox(labels)
+    box.selectedIndex = caps.indexOf(coverCapPx()).coerceAtLeast(0)
+    val panel = JPanel(BorderLayout(6, 6))
+    panel.add(JLabel(Strings.t("cover_cap")), BorderLayout.WEST)
+    panel.add(box, BorderLayout.CENTER)
+    val res = JOptionPane.showConfirmDialog(frame, panel, Strings.t("settings"),
+        JOptionPane.OK_CANCEL_OPTION)
+    if (res == JOptionPane.OK_OPTION) saveProp("cover_cap", caps[box.selectedIndex].toString())
+}
+
 fun applySearchTo(row: Row, label: String?, bulk: Boolean, onSkip: () -> Unit, onStop: () -> Unit, done: () -> Unit) {
     searchAndPick(row.tag, NameParser.parse(row.file), label, onSkip, onStop, bulk) { picked ->
         // Partial sources (Audius / NDL) only fill what they know.
-        val newTag = if (picked.partial)
+        val merged = if (picked.partial)
             picked.mergedOver(row.tag ?: TagData()) else picked
+        // The cover cap applies to covers the candidate brought; a cover
+        // the file already had is left as it is.
+        val newTag = if (picked.cover != null)
+            merged.copy(cover = capCoverBytes(merged.cover, coverCapPx()))
+        else merged
         thread {
             var ok = false
             try {
@@ -594,8 +663,10 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
         setSize(560, 640); setLocationRelativeTo(frame)
     }
 
+    private var coverChanged = false
+
     private fun setCover(bytes: ByteArray) {
-        coverBytes = bytes; coverRemoved = false; updateCoverLabel()
+        coverBytes = bytes; coverRemoved = false; coverChanged = true; updateCoverLabel()
     }
 
     private fun updateCoverLabel() {
@@ -645,9 +716,20 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
         val key = mxmKeyField.text.trim()
         saveProp("musixmatch_key", key)
         thread {
-            var text: String? = try {
-                LrclibClient.fetchBest(title, artist, album, dur)?.plainLyrics
+            val entry = try {
+                LrclibClient.fetchBest(title, artist, album, dur)
             } catch (e: Exception) { null }
+            var text: String? = entry?.plainLyrics
+            // LRCLIB's timestamped lyrics also land next to the file as .lrc
+            var lrcSaved = false
+            if (entry != null && entry.syncedLyrics.isNotBlank()) {
+                lrcSaved = try {
+                    File(row.file.parentFile,
+                        row.file.nameWithoutExtension + ".lrc")
+                        .writeText(entry.syncedLyrics, Charsets.UTF_8)
+                    true
+                } catch (e: Exception) { false }
+            }
             if (text == null) {
                 text = LyricsOvhClient.fetchLyrics(artist, title)
             }
@@ -659,7 +741,10 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
             }
             val found = text
             SwingUtilities.invokeLater {
-                if (found != null) lyricsArea.text = found
+                if (found != null) {
+                    lyricsArea.text = found
+                    if (lrcSaved) info(Strings.t("lrc_saved"))
+                }
                 else info(Strings.t("no_lyrics"))
             }
         }
@@ -678,7 +763,12 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
     }
 
     private fun save() {
-        val d = collect()
+        val collected = collect()
+        // The size cap applies only to a cover replaced in this editor;
+        // the file's own cover passes through untouched.
+        val d = if (coverChanged && collected.cover != null)
+            collected.copy(cover = capCoverBytes(collected.cover, coverCapPx()))
+        else collected
         val newBase = Renamer.sanitize(fields["filename"]?.text ?: "")
         thread {
             var fail: String? = null
@@ -723,7 +813,8 @@ fun bulkEdit() {
         addActionListener {
             val fc = JFileChooser()
             if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION &&
-                MbClient.isImageFile(fc.selectedFile)) coverBytes = fc.selectedFile.readBytes()
+                MbClient.isImageFile(fc.selectedFile))
+                coverBytes = capCoverBytes(fc.selectedFile.readBytes(), coverCapPx())
         }
     })
     val res = JOptionPane.showConfirmDialog(frame, panel, Strings.t("bulk_edit"),
@@ -930,6 +1021,19 @@ fun main() {
         top.add(JButton(Strings.t("history")).apply { vivid(this, 0x0D9488) }.apply {
             addActionListener { showHistory() }
         })
+        top.add(JButton(Strings.t("settings")).apply { vivid(this, 0xDB2777) }.apply {
+            addActionListener { showSettings() }
+        })
+        val filterBox = JComboBox(arrayOf(
+            Strings.t("filter_all"), Strings.t("filter_notag"), Strings.t("filter_nocover")))
+        filterBox.selectedIndex = filterMode
+        filterBox.addActionListener {
+            if (filterBox.selectedIndex != filterMode) {
+                filterMode = filterBox.selectedIndex
+                refresh()
+            }
+        }
+        top.add(filterBox)
         val langBox = JComboBox(Strings.LANGS.map { Strings.LANG_NAMES[it] }.toTypedArray())
         langBox.selectedIndex = Strings.LANGS.indexOf(Strings.lang)
         langBox.addActionListener {
@@ -985,7 +1089,7 @@ fun main() {
                         val sel = checkedRows()
                         if (sel.isNotEmpty() && JOptionPane.showConfirmDialog(frame,
                                 Strings.t("bulk_cover"), "OtoTag", JOptionPane.OK_CANCEL_OPTION) == JOptionPane.OK_OPTION) {
-                            val bytes = images[0].readBytes()
+                            val bytes = capCoverBytes(images[0].readBytes(), coverCapPx())
                             thread {
                                 for (row in sel) {
                                     try {
