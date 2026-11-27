@@ -57,6 +57,16 @@ class EditActivity : Activity() {
         filenameInput = EditText(this).apply { setText(it.name.substringBeforeLast('.')) }
         root.addView(filenameInput)
         root.addView(TextView(this).apply { text = "." + it.ext })
+        root.addView(Button(this).apply {
+            text = Strings.t("from_filename"); Ui.styleButton(this, Ui.ORANGE)
+            setOnClickListener {
+                val p = NameParser.parse(File(itemName))
+                if (p.title.isNotBlank()) inputs["title"]?.setText(p.title)
+                if (p.artist.isNotBlank()) inputs["artist"]?.setText(p.artist)
+                if (p.trackNo.isNotBlank()) inputs["track"]?.setText(p.trackNo)
+                Toast.makeText(this@EditActivity, Strings.t("done"), Toast.LENGTH_SHORT).show()
+            }
+        })
 
         for (k in fieldKeys) {
             root.addView(TextView(this).apply { text = Strings.t(k); setTextColor(Ui.SUB) })

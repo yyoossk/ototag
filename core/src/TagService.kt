@@ -14,6 +14,9 @@ object TagService {
         "flac" -> org.jaudiotagger.kt.AudioFormat.FLAC
         "m4a", "mp4" -> org.jaudiotagger.kt.AudioFormat.MP4
         "ogg", "oga", "opus" -> org.jaudiotagger.kt.AudioFormat.OGG
+        "wav" -> org.jaudiotagger.kt.AudioFormat.WAV
+        "aif", "aiff" -> org.jaudiotagger.kt.AudioFormat.AIFF
+        "dsf" -> org.jaudiotagger.kt.AudioFormat.DSF
         else -> null
     }
 
@@ -33,6 +36,9 @@ object TagService {
             has("ftyp", 4) -> org.jaudiotagger.kt.AudioFormat.MP4
             has("fLaC") -> org.jaudiotagger.kt.AudioFormat.FLAC
             has("OggS") -> org.jaudiotagger.kt.AudioFormat.OGG
+            has("RIFF") -> org.jaudiotagger.kt.AudioFormat.WAV
+            has("FORM") -> org.jaudiotagger.kt.AudioFormat.AIFF
+            has("DSD ") -> org.jaudiotagger.kt.AudioFormat.DSF
             has("ID3") -> org.jaudiotagger.kt.AudioFormat.MP3
             (head[0].toInt() and 0xFF) == 0xFF && (head[1].toInt() and 0xE0) == 0xE0 ->
                 org.jaudiotagger.kt.AudioFormat.MP3
@@ -45,6 +51,9 @@ object TagService {
         org.jaudiotagger.kt.AudioFormat.FLAC -> "flac"
         org.jaudiotagger.kt.AudioFormat.MP4 -> "m4a"
         org.jaudiotagger.kt.AudioFormat.OGG -> "ogg"
+        org.jaudiotagger.kt.AudioFormat.WAV -> "wav"
+        org.jaudiotagger.kt.AudioFormat.AIFF -> "aiff"
+        org.jaudiotagger.kt.AudioFormat.DSF -> "dsf"
         else -> "bin"
     }
 
@@ -95,6 +104,15 @@ object TagService {
         if (d.mbRecordingId.isBlank() && file.extension.lowercase() == "mp3") {
             d.mbRecordingId = readMp3Ufid(file) ?: ""
         }
+        // Old files (ID3v1-era) often carry Shift_JIS text decoded as
+        // Latin-1; repair it when the pattern is unmistakable.
+        d.title = Mojibake.fix(d.title)
+        d.artist = Mojibake.fix(d.artist)
+        d.album = Mojibake.fix(d.album)
+        d.albumArtist = Mojibake.fix(d.albumArtist)
+        d.composer = Mojibake.fix(d.composer)
+        d.genre = Mojibake.fix(d.genre)
+        d.comment = Mojibake.fix(d.comment)
         try { d.durationSec = af.properties.duration.inWholeSeconds } catch (e: Exception) { }
         return d
     }
@@ -239,5 +257,26 @@ object Backup {
         val b = latestBackup(file, backupDir) ?: return false
         b.copyTo(file, overwrite = true)
         return true
+    }
+
+    /**
+     * Keeps the backup store from growing forever: per original file only
+     * the newest [keepPerFile] backups survive (Undo always uses the
+     * newest, so nothing the user can still reach is lost). Empty folders
+     * are removed. Returns how many files were deleted.
+     */
+    fun prune(backupDir: File, keepPerFile: Int = 3): Int {
+        if (!backupDir.isDirectory) return 0
+        var deleted = 0
+        for (dir in backupDir.listFiles() ?: emptyArray()) {
+            if (!dir.isDirectory) continue
+            val files = (dir.listFiles() ?: emptyArray())
+                .filter { it.isFile }.sortedByDescending { it.name }
+            for (f in files.drop(keepPerFile)) {
+                if (f.delete()) deleted++
+            }
+            if ((dir.listFiles() ?: emptyArray()).isEmpty()) dir.delete()
+        }
+        return deleted
     }
 }

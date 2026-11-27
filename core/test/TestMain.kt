@@ -1,5 +1,6 @@
 import com.yyoo.ototag.core.*
 import java.io.File
+import java.nio.charset.Charset
 
 var failures = 0
 fun check(name: String, cond: Boolean, detail: String = "") {
@@ -301,6 +302,37 @@ fun main() {
     check("lyricsovh found", ovh != null && ovh.startsWith("Is this the real life"),
         ovh?.take(20) ?: "null")
     check("lyricsovh missing", LyricsOvhClient.fetchLyrics("Nobody", "Nothing") == null, "")
+
+    // --- WAV / AIFF / DSF roundtrip (fixtures are tiny generated files) ---
+    for ((fname, label) in listOf("small.wav" to "wav", "small.aiff" to "aiff", "small.dsf" to "dsf")) {
+        val src = File("testdata/$fname")
+        val work = File("testwork/$fname").apply { parentFile.mkdirs() }
+        src.copyTo(work, overwrite = true)
+        TagService.write(work, TagData(title = "形式テスト", artist = "歌手", album = "盤",
+            year = "2024", track = "2", genre = "J-Pop"))
+        val r = TagService.read(work)
+        check("$label roundtrip", r.title == "形式テスト" && r.artist == "歌手" && r.track == "2",
+            "${r.title}/${r.artist}/${r.track}")
+        check("$label sniff", TagService.sniffFormat(work) != null, TagService.sniffFormat(work).toString())
+    }
+
+    // --- Mojibake repair (Shift_JIS bytes mis-decoded as Latin-1) ---
+    val original = "こんにちは世界"
+    val garbled = String(original.toByteArray(Charset.forName("windows-31j")),
+        Charset.forName("ISO-8859-1"))
+    check("mojibake repaired", Mojibake.fix(garbled) == original, Mojibake.fix(garbled))
+    check("mojibake keeps japanese", Mojibake.fix(original) == original, "")
+    check("mojibake keeps ascii", Mojibake.fix("Hello World") == "Hello World", "")
+    check("mojibake keeps european", Mojibake.fix("Résumé") == "Résumé", Mojibake.fix("Résumé"))
+
+    // --- Backup pruning keeps the newest few per file ---
+    val bdir = File("testwork/backups")
+    val sub = File(bdir, "deadbeef"); sub.mkdirs()
+    for (i in 1..6) File(sub, "100000000000${i}_song.mp3").writeText("x")
+    val deleted = Backup.prune(bdir, keepPerFile = 3)
+    val remaining = (sub.listFiles() ?: emptyArray()).map { it.name }.sorted()
+    check("backup prune", deleted == 3 && remaining.size == 3 &&
+        remaining.first().startsWith("1000000000004"), remaining.toString())
 
     // --- Update history (fixture built from the real published releases) ---
     UpdateChecker.fetcher = { File("testdata/github-releases.json").readBytes() }

@@ -41,7 +41,18 @@ class MainActivity : Activity() {
         else -> Items.list
     }
 
-    /** Settings dialog: the embedded-cover size cap (default: no limit). */
+    /** Loads the per-source on/off switches into the core search flags. */
+    private fun loadSourcePrefs() {
+        SearchSources.mb = prefs.getBoolean("src_mb", true)
+        SearchSources.animeThemes = prefs.getBoolean("src_at", true)
+        SearchSources.itunes = prefs.getBoolean("src_itunes", true)
+        SearchSources.deezer = prefs.getBoolean("src_deezer", true)
+        SearchSources.vgmdb = prefs.getBoolean("src_vgmdb", true)
+        SearchSources.audius = prefs.getBoolean("src_audius", true)
+        SearchSources.ndl = prefs.getBoolean("src_ndl", true)
+    }
+
+    /** Settings dialog: the cover size cap and the search source switches. */
     private fun showSettings() {
         val caps = listOf(0, 2000, 1200, 800)
         val labels = listOf(Strings.t("cap_none"), "2000px", "1200px", "800px")
@@ -54,11 +65,26 @@ class MainActivity : Activity() {
         spinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, labels)
         spinner.setSelection(caps.indexOf(cur).coerceAtLeast(0))
         layout.addView(spinner)
+        val sourceKeys = listOf(
+            "src_mb" to "MusicBrainz", "src_at" to "AnimeThemes",
+            "src_itunes" to "iTunes", "src_deezer" to "Deezer",
+            "src_vgmdb" to "VGMdb", "src_audius" to "Audius", "src_ndl" to "NDL")
+        val boxes = sourceKeys.map { (key, name) ->
+            CheckBox(this).apply {
+                text = name
+                isChecked = prefs.getBoolean(key, true)
+                layout.addView(this)
+            }
+        }
         AlertDialog.Builder(this)
             .setTitle(Strings.t("settings"))
             .setView(layout)
             .setPositiveButton(Strings.t("ok")) { _, _ ->
-                prefs.edit().putInt("cover_cap", caps[spinner.selectedItemPosition]).apply()
+                val e = prefs.edit()
+                e.putInt("cover_cap", caps[spinner.selectedItemPosition])
+                sourceKeys.forEachIndexed { i, (key, _) -> e.putBoolean(key, boxes[i].isChecked) }
+                e.apply()
+                loadSourcePrefs()
             }
             .setNegativeButton(Strings.t("cancel"), null)
             .show()
@@ -256,6 +282,12 @@ class MainActivity : Activity() {
         actionBar?.hide()
         Strings.lang = Strings.resolve(prefs.getString("lang", null), Locale.getDefault().toLanguageTag())
         ItunesClient.country = Locale.getDefault().country.ifBlank { "JP" }
+        loadSourcePrefs()
+        // Housekeeping off the UI thread: prune old backups, drop stale copies.
+        thread {
+            try { Backup.prune(SafStore.backupDir(this)) } catch (e: Exception) { }
+            SafStore.cleanupCache(this)
+        }
         title = "OtoTag"
 
         val root = LinearLayout(this).apply {

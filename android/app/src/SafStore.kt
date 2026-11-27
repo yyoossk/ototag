@@ -70,6 +70,23 @@ object SafStore {
         return f
     }
 
+    /**
+     * Startup housekeeping: drops stale working copies (not touched for a
+     * day — anything from this session is fresh and stays) and the
+     * transient verify files.
+     */
+    fun cleanupCache(ctx: Context) {
+        try {
+            val cutoff = System.currentTimeMillis() - 24 * 60 * 60 * 1000L
+            File(ctx.cacheDir, "items").listFiles()?.forEach {
+                if (it.lastModified() < cutoff) it.delete()
+            }
+            ctx.cacheDir.listFiles()?.forEach {
+                if (it.name == "verify.bin" || it.name.startsWith("verify.")) it.delete()
+            }
+        } catch (e: Exception) { }
+    }
+
     fun writeBack(ctx: Context, item: Item) {
         val f = item.local ?: return
         ctx.contentResolver.openOutputStream(item.docUri, "wt")?.use { out ->

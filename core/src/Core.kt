@@ -60,7 +60,8 @@ data class TagData(
     }
 }
 
-val AUDIO_EXTS = setOf("mp3", "flac", "m4a", "mp4", "ogg", "oga", "opus")
+val AUDIO_EXTS = setOf("mp3", "flac", "m4a", "mp4", "ogg", "oga", "opus",
+    "wav", "aif", "aiff", "dsf")
 
 fun File.isAudio(): Boolean = isFile && extension.lowercase() in AUDIO_EXTS
 

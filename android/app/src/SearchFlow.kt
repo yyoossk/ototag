@@ -96,96 +96,114 @@ object SearchFlow {
         thread {
             val found = LinkedHashMap<String, MbCandidate>()
             var mbError: Exception? = null
-            try {
-                if (!auto) {
-                    for (c in MbClient.searchFreeText(query))
-                        found.putIfAbsent(c.recordingId, c)
-                } else {
-                    if (tag != null && !tag.isBasicallyEmpty()) {
-                        for (c in MbClient.searchByTagsOrName(tag.title, tag.artist, tag.album))
-                            found.putIfAbsent(c.recordingId, c)
-                    }
-                    if (found.isEmpty() && parsed != null) {
-                        for ((t, a, al) in NameParser.queries(parsed)) {
-                            for (c in MbClient.searchByTagsOrName(t, a, al))
-                                found.putIfAbsent(c.recordingId, c)
-                            if (found.isNotEmpty()) break
+            var atSongs: List<AtSong> = emptyList()
+            var itunes: List<ItunesTrack> = emptyList()
+            var deezer: List<DeezerTrack> = emptyList()
+            var vgmdb: List<VgmdbTrack> = emptyList()
+            var audius: List<AudiusTrack> = emptyList()
+            var ndl: List<NdlRecord> = emptyList()
+            // All enabled sources are queried in parallel; the results are
+            // still presented in the fixed source order afterwards.
+            val jobs = ArrayList<Thread>()
+            if (com.yyoo.ototag.core.SearchSources.mb) jobs.add(thread {
+                try {
+                    if (!auto) {
+                        for (c in MbClient.searchFreeText(query))
+                            synchronized(found) { found.putIfAbsent(c.recordingId, c) }
+                    } else {
+                        if (tag != null && !tag.isBasicallyEmpty()) {
+                            for (c in MbClient.searchByTagsOrName(tag.title, tag.artist, tag.album))
+                                synchronized(found) { found.putIfAbsent(c.recordingId, c) }
+                        }
+                        if (found.isEmpty() && parsed != null) {
+                            for ((t, a, al) in NameParser.queries(parsed)) {
+                                for (c in MbClient.searchByTagsOrName(t, a, al))
+                                    synchronized(found) { found.putIfAbsent(c.recordingId, c) }
+                                if (found.isNotEmpty()) break
+                            }
                         }
                     }
-                }
-            } catch (e: Exception) { mbError = e }
-            // AnimeThemes (anime OP/ED) as a second source; best effort only.
-            val atSongs = try {
-                if (!auto) AnimeThemesClient.searchSongs(query)
-                else {
-                    val q1 = tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title ?: ""
-                    val q2 = tag?.artist?.takeIf { it.isNotBlank() } ?: parsed?.artist ?: ""
-                    val first = if (q1.isNotBlank()) AnimeThemesClient.searchSongs(q1) else emptyList()
-                    if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
-                    else AnimeThemesClient.searchSongs(q2)
-                }
-            } catch (e: Exception) { emptyList() }
-            // iTunes (Apple Music catalog) as a third source; best effort only.
-            val itunes = try {
-                if (!auto) ItunesClient.search(query)
-                else {
-                    val q1 = listOfNotNull(
-                        tag?.title?.takeIf { it.isNotBlank() },
-                        tag?.artist?.takeIf { it.isNotBlank() }).joinToString(" ")
-                    val q2 = listOfNotNull(parsed?.title, parsed?.artist).joinToString(" ")
-                    val first = if (q1.isNotBlank()) ItunesClient.search(q1) else emptyList()
-                    if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
-                    else ItunesClient.search(q2)
-                }
-            } catch (e: Exception) { emptyList() }
-            // Deezer as a fourth source; best effort only.
-            val deezer = try {
-                if (!auto) DeezerClient.search(query)
-                else {
-                    val q1 = listOfNotNull(
-                        tag?.title?.takeIf { it.isNotBlank() },
-                        tag?.artist?.takeIf { it.isNotBlank() }).joinToString(" ")
-                    val q2 = listOfNotNull(parsed?.title, parsed?.artist).joinToString(" ")
-                    val first = if (q1.isNotBlank()) DeezerClient.search(q1) else emptyList()
-                    if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
-                    else DeezerClient.search(q2)
-                }
-            } catch (e: Exception) { emptyList() }
-            // VGMdb (game / anime soundtracks) as a fifth source; best effort only.
-            val vgmdb = try {
-                if (!auto) VgmdbClient.search(query)
-                else {
-                    val q1 = tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title ?: ""
-                    val q2 = tag?.album?.takeIf { it.isNotBlank() } ?: parsed?.albumHint ?: ""
-                    val first = if (q1.isNotBlank()) VgmdbClient.search(q1) else emptyList()
-                    if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
-                    else VgmdbClient.search(q2)
-                }
-            } catch (e: Exception) { emptyList() }
-            // Audius (indie catalog, no album info) as a sixth source; best effort only.
-            val audius = try {
-                if (!auto) AudiusClient.search(query)
-                else {
-                    val q1 = listOf(tag?.title, tag?.artist)
-                        .filter { !it.isNullOrBlank() }.joinToString(" ")
-                        .ifBlank { parsed?.title ?: "" }
-                    val q2 = parsed?.title ?: ""
-                    val first = if (q1.isNotBlank()) AudiusClient.search(q1) else emptyList()
-                    if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
-                    else AudiusClient.search(q2)
-                }
-            } catch (e: Exception) { emptyList() }
-            // NDL Search (Japanese legal-deposit catalog, album-level); best effort.
-            val ndl = try {
-                if (!auto) NdlClient.search(query)
-                else {
-                    val q1 = tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title ?: ""
-                    val q2 = tag?.album?.takeIf { it.isNotBlank() } ?: parsed?.albumHint ?: ""
-                    val first = if (q1.isNotBlank()) NdlClient.search(q1) else emptyList()
-                    if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
-                    else NdlClient.search(q2)
-                }
-            } catch (e: Exception) { emptyList() }
+                } catch (e: Exception) { mbError = e }
+            })
+            if (com.yyoo.ototag.core.SearchSources.animeThemes) jobs.add(thread {
+                atSongs = try {
+                    if (!auto) AnimeThemesClient.searchSongs(query)
+                    else {
+                        val q1 = tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title ?: ""
+                        val q2 = tag?.artist?.takeIf { it.isNotBlank() } ?: parsed?.artist ?: ""
+                        val first = if (q1.isNotBlank()) AnimeThemesClient.searchSongs(q1) else emptyList()
+                        if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+                        else AnimeThemesClient.searchSongs(q2)
+                    }
+                } catch (e: Exception) { emptyList() }
+            })
+            if (com.yyoo.ototag.core.SearchSources.itunes) jobs.add(thread {
+                itunes = try {
+                    if (!auto) ItunesClient.search(query)
+                    else {
+                        val q1 = listOfNotNull(
+                            tag?.title?.takeIf { it.isNotBlank() },
+                            tag?.artist?.takeIf { it.isNotBlank() }).joinToString(" ")
+                        val q2 = listOfNotNull(parsed?.title, parsed?.artist).joinToString(" ")
+                        val first = if (q1.isNotBlank()) ItunesClient.search(q1) else emptyList()
+                        if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+                        else ItunesClient.search(q2)
+                    }
+                } catch (e: Exception) { emptyList() }
+            })
+            if (com.yyoo.ototag.core.SearchSources.deezer) jobs.add(thread {
+                deezer = try {
+                    if (!auto) DeezerClient.search(query)
+                    else {
+                        val q1 = listOfNotNull(
+                            tag?.title?.takeIf { it.isNotBlank() },
+                            tag?.artist?.takeIf { it.isNotBlank() }).joinToString(" ")
+                        val q2 = listOfNotNull(parsed?.title, parsed?.artist).joinToString(" ")
+                        val first = if (q1.isNotBlank()) DeezerClient.search(q1) else emptyList()
+                        if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+                        else DeezerClient.search(q2)
+                    }
+                } catch (e: Exception) { emptyList() }
+            })
+            if (com.yyoo.ototag.core.SearchSources.vgmdb) jobs.add(thread {
+                vgmdb = try {
+                    if (!auto) VgmdbClient.search(query)
+                    else {
+                        val q1 = tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title ?: ""
+                        val q2 = tag?.album?.takeIf { it.isNotBlank() } ?: parsed?.albumHint ?: ""
+                        val first = if (q1.isNotBlank()) VgmdbClient.search(q1) else emptyList()
+                        if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+                        else VgmdbClient.search(q2)
+                    }
+                } catch (e: Exception) { emptyList() }
+            })
+            if (com.yyoo.ototag.core.SearchSources.audius) jobs.add(thread {
+                audius = try {
+                    if (!auto) AudiusClient.search(query)
+                    else {
+                        val q1 = listOf(tag?.title, tag?.artist)
+                            .filter { !it.isNullOrBlank() }.joinToString(" ")
+                            .ifBlank { parsed?.title ?: "" }
+                        val q2 = parsed?.title ?: ""
+                        val first = if (q1.isNotBlank()) AudiusClient.search(q1) else emptyList()
+                        if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+                        else AudiusClient.search(q2)
+                    }
+                } catch (e: Exception) { emptyList() }
+            })
+            if (com.yyoo.ototag.core.SearchSources.ndl) jobs.add(thread {
+                ndl = try {
+                    if (!auto) NdlClient.search(query)
+                    else {
+                        val q1 = tag?.title?.takeIf { it.isNotBlank() } ?: parsed?.title ?: ""
+                        val q2 = tag?.album?.takeIf { it.isNotBlank() } ?: parsed?.albumHint ?: ""
+                        val first = if (q1.isNotBlank()) NdlClient.search(q1) else emptyList()
+                        if (first.isNotEmpty() || q2.isBlank() || q2 == q1) first
+                        else NdlClient.search(q2)
+                    }
+                } catch (e: Exception) { emptyList() }
+            })
+            jobs.forEach { it.join() }
             if (stopped.get()) return@thread
             val cands = found.values.toList()
             activity.runOnUiThread {
