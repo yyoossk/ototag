@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.DocumentsContract
 import com.yyoo.ototag.core.AUDIO_EXTS
+import com.yyoo.ototag.core.Strings
 import com.yyoo.ototag.core.TagData
 import java.io.File
 
@@ -307,6 +308,23 @@ object SafStore {
     var lastRenameDetail: String = ""
 
     fun rename(ctx: Context, item: Item, newName: String): Boolean {
+        // A name another file in the same folder already carries can
+        // never work. Say so in plain words instead of burying it in a
+        // provider error: this is the one failure the user can act on.
+        val parentUri0 = item.parentUri
+        if (parentUri0 != null && newName != item.name) {
+            val clash = findChild(ctx, parentUri0, newName)
+            if (clash != null) {
+                val clashId = try { DocumentsContract.getDocumentId(clash) }
+                    catch (e: Exception) { null }
+                val myId = try { DocumentsContract.getDocumentId(item.docUri) }
+                    catch (e: Exception) { null }
+                if (clashId == null || myId == null || clashId != myId) {
+                    lastRenameDetail = Strings.t("rename_exists") + ": " + newName
+                    return false
+                }
+            }
+        }
         val detail = StringBuilder()
         var threw = false
         val newUri = try {

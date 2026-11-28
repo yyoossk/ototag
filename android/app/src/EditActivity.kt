@@ -632,7 +632,11 @@ class EditActivity : Activity() {
                 it.setTagLight(TagService.read(it.local!!))
                 if (newBase.isNotBlank() && newBase != it.name.substringBeforeLast('.')) {
                     val newName = newBase + "." + it.ext
-                    if (!SafStore.rename(this, it, newName)) err = "rename failed: $newName"
+                    if (!SafStore.rename(this, it, newName)) {
+                        val d = SafStore.lastRenameDetail
+                        err = if (d.isBlank()) "rename failed: $newName"
+                            else "rename failed: $newName\n$d"
+                    }
                 }
                 // The edit is done and written back: the working copy
                 // has served its purpose and is dropped right away.

@@ -829,18 +829,26 @@ class MainActivity : Activity() {
     private fun showApplied(item: Item, newTag: TagData, done: () -> Unit) {
         val base = Renamer.nameFromTag(newTag)
         val newName = if (base.isBlank()) "" else "$base.${item.ext}"
-        val canRename = newName.isNotBlank() && newName != item.name
+        // A name another listed file already carries is not offered:
+        // choosing it could only fail.
+        fun taken(n: String) = n.isNotBlank() &&
+            Items.list.any { it !== item && it.name.equals(n, ignoreCase = true) }
+        val canRename = newName.isNotBlank() && newName != item.name && !taken(newName)
         // The same offer with the track number stripped, when the
         // tag-based name carries one and the result differs.
         val strippedBase = Renamer.stripTrackPrefix(base)
         val strippedName = if (strippedBase != base) "$strippedBase.${item.ext}" else ""
-        val hasStrip = strippedName.isNotBlank() && strippedName != item.name
+        val hasStrip = strippedName.isNotBlank() && strippedName != item.name &&
+            !taken(strippedName)
         val msg = buildString {
             append(newTag.title)
             if (newTag.artist.isNotBlank()) append("\n${newTag.artist}")
             if (newTag.album.isNotBlank()) append("\n${newTag.album}")
-            if (canRename) append("\n\n${Strings.t("ask_rename")}\n${item.name}\n→ $newName")
-            if (canRename && hasStrip) append("\n→ $strippedName")
+            if (canRename || hasStrip) {
+                append("\n\n${Strings.t("ask_rename")}\n${item.name}")
+                if (canRename) append("\n→ $newName")
+                if (hasStrip) append("\n→ $strippedName")
+            }
         }
         val b = AlertDialog.Builder(this)
             .setTitle(Strings.t("applied"))
@@ -852,11 +860,13 @@ class MainActivity : Activity() {
                 if (bmp != null) b.setIcon(android.graphics.drawable.BitmapDrawable(resources, bmp))
             } catch (e: Exception) { }
         }
-        if (canRename) {
-            b.setPositiveButton(Strings.t("rename")) { _, _ ->
-                thread {
-                    SafStore.rename(this, item, newName)
-                    runOnUiThread { adapter.notifyDataSetChanged(); done() }
+        if (canRename || hasStrip) {
+            if (canRename) {
+                b.setPositiveButton(Strings.t("rename")) { _, _ ->
+                    thread {
+                        SafStore.rename(this, item, newName)
+                        runOnUiThread { adapter.notifyDataSetChanged(); done() }
+                    }
                 }
             }
             if (hasStrip) {
@@ -978,12 +988,16 @@ class MainActivity : Activity() {
                     if (newName == item.name) continue
                     if (!targets.add(newName.lowercase()) ||
                         Items.list.any { it !== item && it.name.equals(newName, ignoreCase = true) }) {
-                        failed++; continue
+                        failed++
+                        failNotes.add("${item.name}\n${Strings.t("rename_exists")}: $newName")
+                        continue
                     }
                     jobs.add(item to newName)
                 }
                 if (jobs.isEmpty()) {
-                    if (failed > 0) toast("${Strings.t("failed")}: $failed")
+                    if (failNotes.isNotEmpty())
+                        Ui.failDialog(this, failNotes.joinToString("\n\n"))
+                    else if (failed > 0) toast("${Strings.t("failed")}: $failed")
                     return@setPositiveButton
                 }
                 // The renames themselves run in the background: a rename
@@ -1003,8 +1017,10 @@ class MainActivity : Activity() {
                     }
                     runOnUiThread {
                         adapter.notifyDataSetChanged()
-                        if (failed == 0) toast(Strings.t("done"))
-                        else Ui.failDialog(this, failNotes.joinToString("\n\n"))
+                        if (failNotes.isNotEmpty())
+                            Ui.failDialog(this, failNotes.joinToString("\n\n"))
+                        else if (failed == 0) toast(Strings.t("done"))
+                        else toast("${Strings.t("failed")}: $failed")
                     }
                 }
             }

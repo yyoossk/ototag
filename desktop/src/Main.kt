@@ -1179,7 +1179,8 @@ fun applySearchTo(row: Row, label: String?, bulk: Boolean, onSkip: () -> Unit, o
                 }
                 val base = Renamer.nameFromTag(newTag)
                 val newName = if (base.isBlank()) "" else "$base.${row.file.extension}"
-                if (newName.isBlank() || newName == row.file.name) {
+                if (newName.isBlank() || newName == row.file.name ||
+                    java.io.File(row.file.parentFile, newName).exists()) {
                     JOptionPane.showMessageDialog(frame, summary, Strings.t("applied"),
                         JOptionPane.INFORMATION_MESSAGE)
                     done(); return@invokeLater
@@ -1189,7 +1190,8 @@ fun applySearchTo(row: Row, label: String?, bulk: Boolean, onSkip: () -> Unit, o
                 val strippedBase = Renamer.stripTrackPrefix(base)
                 val strippedName = if (strippedBase != base)
                     "$strippedBase.${row.file.extension}" else ""
-                val hasStrip = strippedName.isNotBlank() && strippedName != row.file.name
+                val hasStrip = strippedName.isNotBlank() && strippedName != row.file.name &&
+                    !java.io.File(row.file.parentFile, strippedName).exists()
                 fun doRename(useBase: String) {
                     thread {
                         val renamed = Renamer.rename(row.file, useBase)
@@ -1807,12 +1809,22 @@ fun bulkRename() {
     if (res != JOptionPane.OK_OPTION) return
     thread {
         var failed = 0
+        val notes = ArrayList<String>()
         val targets = HashSet<String>()
         for ((row, tf) in fields) {
             val newBase = Renamer.sanitize(tf.text)
             if (newBase.isBlank()) { failed++; continue }
-            if (newBase + "." + row.file.extension == row.file.name) continue
-            if (!targets.add((newBase + "." + row.file.extension).lowercase())) { failed++; continue }
+            val newName = newBase + "." + row.file.extension
+            if (newName == row.file.name) continue
+            // Name clashes get their reason spelled out, not just a count.
+            val targetFile = java.io.File(row.file.parentFile, newName)
+            if (!targets.add(newName.lowercase()) ||
+                (targetFile.exists() &&
+                    targetFile.absolutePath != row.file.absolutePath)) {
+                failed++
+                notes.add("${row.file.name}\n${Strings.t("rename_exists")}: $newName")
+                continue
+            }
             val renamed = Renamer.rename(row.file, newBase)
             if (renamed != null) {
                 Backup.move(row.file, renamed, backupDir)
@@ -1823,7 +1835,8 @@ fun bulkRename() {
             } else failed++
         }
         refresh()
-        info(if (failed == 0) Strings.t("done") else "${Strings.t("failed")}: $failed")
+        if (notes.isNotEmpty()) fail(notes.joinToString("\n\n"))
+        else info(if (failed == 0) Strings.t("done") else "${Strings.t("failed")}: $failed")
     }
 }
 
