@@ -1833,6 +1833,18 @@ fun showRestoreWin() {
                         }
                     }
                 })
+                row.add(JButton(Strings.t("delete")).apply {
+                    addActionListener {
+                        val res = JOptionPane.showConfirmDialog(dlg,
+                            Strings.t("genre_del_confirm"), g,
+                            JOptionPane.YES_NO_OPTION)
+                        if (res == JOptionPane.YES_OPTION) {
+                            persistRemovedGenresWin(
+                                GenreList.remove(removedGenresWin(), g))
+                            renderRestore()
+                        }
+                    }
+                })
                 col.add(row)
             }
         }

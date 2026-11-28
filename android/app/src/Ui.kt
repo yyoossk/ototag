@@ -296,14 +296,37 @@ object GenrePicker {
                 if (trashed.isNotEmpty()) {
                     section(col2, com.yyoo.ototag.core.Strings.t("genre_mine"))
                     for (g in trashed) {
-                        col2.addView(actionRow(g, com.yyoo.ototag.core.Strings.t("genre_restore"), {
-                            confirmRestore(com.yyoo.ototag.core.Strings.t("genre_restore_confirm")) {
-                                trashed = com.yyoo.ototag.core.GenreList.remove(trashed, g)
-                                mine = com.yyoo.ototag.core.GenreList.add(mine, g)
-                                persistRemovedCustom(trashed); persistCustom(mine)
-                                renderRestore()
+                        // Own genres can also be deleted for good here.
+                        val row = android.widget.LinearLayout(ctx).apply {
+                            orientation = android.widget.LinearLayout.HORIZONTAL
+                            gravity = android.view.Gravity.CENTER_VERTICAL
+                        }
+                        val tv = nameRow(g) {}
+                        tv.layoutParams = android.widget.LinearLayout.LayoutParams(0,
+                            android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                        row.addView(tv)
+                        row.addView(Button(ctx).apply {
+                            text = com.yyoo.ototag.core.Strings.t("genre_restore")
+                            setOnClickListener {
+                                confirmRestore(com.yyoo.ototag.core.Strings.t("genre_restore_confirm")) {
+                                    trashed = com.yyoo.ototag.core.GenreList.remove(trashed, g)
+                                    mine = com.yyoo.ototag.core.GenreList.add(mine, g)
+                                    persistRemovedCustom(trashed); persistCustom(mine)
+                                    renderRestore()
+                                }
                             }
-                        }, null))
+                        })
+                        row.addView(Button(ctx).apply {
+                            text = com.yyoo.ototag.core.Strings.t("delete")
+                            setOnClickListener {
+                                confirmDelete(g) {
+                                    trashed = com.yyoo.ototag.core.GenreList.remove(trashed, g)
+                                    persistRemovedCustom(trashed)
+                                    renderRestore()
+                                }
+                            }
+                        })
+                        col2.addView(row)
                     }
                 }
                 if (defs.isNotEmpty()) {
