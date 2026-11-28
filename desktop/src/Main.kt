@@ -219,9 +219,13 @@ fun shownRows(): List<Row> {
  * one folder, folder headers are interleaved (click to collapse).
  */
 fun displayRows(): List<Any> {
+    // shownRows() first: it recomputes shownCacheKey when the data
+    // changed. Keying the display cache on the not-yet-refreshed key
+    // returned the previous display forever — after startup that was
+    // the empty table, so an opened folder never appeared.
+    val shown = shownRows()
     val dkey = shownCacheKey + "|" + collapsedFolders.hashCode()
     displayCache?.let { if (displayCacheKey == dkey) return it }
-    val shown = shownRows()
     val folders = shown.map { it.folder }.distinct()
     val out: List<Any> = if (folders.size <= 1) shown
     else {
@@ -1140,17 +1144,23 @@ fun showSettings() {
 fun applySearchTo(row: Row, label: String?, bulk: Boolean, onSkip: () -> Unit, onStop: () -> Unit, done: () -> Unit) {
     // The search, the diff preview and the partial merge need the FULL
     // tag (with cover); the list itself only keeps the light copy.
-    val fullOld = try { TagService.read(row.file) } catch (e: Exception) { row.tag }
-    searchAndPick(fullOld, NameParser.parse(row.file), row.file, label, onSkip, onStop, bulk) { picked ->
-        // Partial sources (Audius / NDL) only fill what they know.
-        val merged = if (picked.partial)
-            picked.mergedOver(fullOld ?: TagData()) else picked
-        // The cover cap applies to covers the candidate brought; a cover
-        // the file already had is left as it is.
-        val newTag = if (picked.cover != null)
-            merged.copy(cover = capCoverBytes(merged.cover, coverCapPx()))
-        else merged
-        thread {
+    // The read, the merge and the cover cap run off the event thread:
+    // capping decodes and re-encodes the cover, which froze the window
+    // for big covers (the same bug the Android build fixed in 1908).
+    thread {
+        val fullOld = try { TagService.read(row.file) } catch (e: Exception) { row.tag }
+        SwingUtilities.invokeLater {
+            searchAndPick(fullOld, NameParser.parse(row.file), row.file, label, onSkip, onStop, bulk) { picked ->
+                val cap = coverCapPx()
+                thread {
+                    // Partial sources (Audius / NDL) only fill what they know.
+                    val merged = if (picked.partial)
+                        picked.mergedOver(fullOld ?: TagData()) else picked
+                    // The cover cap applies to covers the candidate
+                    // brought; a cover the file already had is left as is.
+                    val newTag = if (picked.cover != null)
+                        merged.copy(cover = capCoverBytes(merged.cover, cap))
+                    else merged
             var ok = false
             try {
                 Backup.backup(row.file, backupDir)
@@ -1223,6 +1233,8 @@ fun applySearchTo(row: Row, label: String?, bulk: Boolean, onSkip: () -> Unit, o
                         "$summary\n\n${Strings.t("ask_rename")}\n${row.file.name}\n→ $newName",
                         Strings.t("applied"), JOptionPane.YES_NO_OPTION)
                     if (res == JOptionPane.YES_OPTION) doRename(base) else done()
+                }
+            }
                 }
             }
         }
@@ -1670,11 +1682,10 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
 
     private fun save() {
         val collected = collect()
-        // The size cap applies only to a cover replaced in this editor;
-        // the file's own cover passes through untouched.
-        val d = if (coverChanged && collected.cover != null)
-            collected.copy(cover = capCoverBytes(collected.cover, coverCapPx()))
-        else collected
+        // The diff preview compares against the collected values; the
+        // cover itself is capped inside the save thread below (capping
+        // decodes and re-encodes the image — not EDT work).
+        val d = collected
         val newBase = Renamer.sanitize(fields["filename"]?.text ?: "")
         // Pre-save preview: the same change list the search flow shows.
         val lines = ArrayList(TagDiff.lines(original, d))
@@ -1689,12 +1700,17 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
         thread {
             var fail: String? = null
             try {
+                // The size cap applies only to a cover replaced in this
+                // editor; the file's own cover passes through untouched.
+                val capped = if (coverChanged && d.cover != null)
+                    d.copy(cover = capCoverBytes(d.cover, coverCapPx()))
+                else d
                 // An untouched cover is re-read from the file now: the
                 // dialog only ever held a small preview of it.
                 val toWrite = if (!coverChanged && !coverRemoved) {
                     val cur = TagService.read(row.file)
-                    d.copy(cover = cur.cover)
-                } else d
+                    capped.copy(cover = cur.cover)
+                } else capped
                 Backup.backup(row.file, backupDir)
                 TagService.write(row.file, toWrite)
                 row.setTagLight(TagService.read(row.file))
@@ -1741,8 +1757,14 @@ fun bulkEdit() {
         addActionListener {
             val fc = JFileChooser()
             if (fc.showOpenDialog(frame) == JFileChooser.APPROVE_OPTION &&
-                MbClient.isImageFile(fc.selectedFile))
-                coverBytes = capCoverBytes(fc.selectedFile.readBytes(), coverCapPx())
+                MbClient.isImageFile(fc.selectedFile)) {
+                val f = fc.selectedFile; val cap = coverCapPx()
+                thread {
+                    val b = try { capCoverBytes(f.readBytes(), cap) }
+                        catch (e: Exception) { null }
+                    SwingUtilities.invokeLater { coverBytes = b }
+                }
+            }
         }
     })
     val res = JOptionPane.showConfirmDialog(frame, panel, Strings.t("bulk_edit"),
@@ -1935,22 +1957,60 @@ fun applyUpdateDesktop(info: UpdateInfo) {
         try {
             val jarFile = File(object {}.javaClass.protectionDomain.codeSource.location.toURI())
             val appDir = jarFile.parentFile
+            // The update writes next to the jar. If that folder is not
+            // writable (Program Files, a protected folder), say so in
+            // plain words instead of dying with a raw access error.
+            val probe = File(appDir, ".ototag-write-test")
+            val writable = try {
+                probe.writeBytes(byteArrayOf(0)); probe.delete(); true
+            } catch (e: Exception) { false }
+            if (!writable) {
+                SwingUtilities.invokeLater {
+                    progress.dispose()
+                    info(Strings.t("upd_no_perm"))
+                }
+                return@thread
+            }
+            // The swap script waits until the running jar can actually
+            // be renamed (the JVM may take a moment to exit) instead of
+            // firing one rename after a fixed sleep and giving up.
+            fun updateBat(swapLine: String): String {
+                val lines = listOf(
+                    "@echo off",
+                    "set /a tries=0",
+                    ":waitloop",
+                    "if exist \"%~dp0OtoTag.jar.old\" del /Q \"%~dp0OtoTag.jar.old\" >nul 2>nul",
+                    "ren \"%~dp0OtoTag.jar\" OtoTag.jar.old >nul 2>nul",
+                    "if exist \"%~dp0OtoTag.jar.old\" goto swapped",
+                    "set /a tries+=1",
+                    "if %tries% GEQ 30 goto failed",
+                    "ping -n 2 127.0.0.1 >nul",
+                    "goto waitloop",
+                    ":swapped",
+                    "if exist \"%~dp0ototag-*.jsa\" del /Q \"%~dp0ototag-*.jsa\" >nul 2>nul",
+                    swapLine,
+                    "start \"\" \"%~dp0OtoTag.exe\"",
+                    "goto done",
+                    ":failed",
+                    "start \"\" \"%~dp0OtoTag.exe\"",
+                    ":done")
+                return lines.joinToString("\r\n") + "\r\n"
+            }
+            fun runBatAndExit(swapLine: String) {
+                val bat = File(appDir, "apply-update.bat")
+                bat.writeText(updateBat(swapLine))
+                // cmd /c on the bat directly: "start /min <path>" could
+                // swallow a quoted path as a window title and never run.
+                ProcessBuilder("cmd", "/c", bat.absolutePath)
+                    .directory(appDir).start()
+                kotlin.system.exitProcess(0)
+            }
             // Small path: when the release carries the jar on its own,
             // download just that (~1 MB) instead of the whole zip.
             if (info.windowsJarUrl.isNotBlank()) {
                 val newJar = File(appDir, "OtoTag.jar.new")
                 UpdateChecker.download(info.windowsJarUrl, newJar)
-                val bat = File(appDir, "apply-update.bat")
-                bat.writeText("@echo off\r\n" +
-                    "timeout /t 3 /nobreak >nul\r\n" +
-                    "if exist \"%~dp0OtoTag.jar.old\" del /Q \"%~dp0OtoTag.jar.old\"\r\n" +
-                    "if exist \"%~dp0ototag-*.jsa\" del /Q \"%~dp0ototag-*.jsa\"\r\n" +
-                    "ren \"%~dp0OtoTag.jar\" OtoTag.jar.old\r\n" +
-                    "ren \"%~dp0OtoTag.jar.new\" OtoTag.jar\r\n" +
-                    "start \"\" \"%~dp0OtoTag.exe\"\r\n")
-                ProcessBuilder("cmd", "/c", "start", "/min", bat.absolutePath)
-                    .directory(appDir).start()
-                kotlin.system.exitProcess(0)
+                runBatAndExit("ren \"%~dp0OtoTag.jar.new\" OtoTag.jar")
             }
             val zipFile = File(appDir, "OtoTag-update.zip")
             UpdateChecker.download(info.windowsZipUrl, zipFile)
@@ -1969,17 +2029,7 @@ fun applyUpdateDesktop(info: UpdateInfo) {
                 }
             }
             zipFile.delete()
-            val bat = File(appDir, "apply-update.bat")
-            bat.writeText("@echo off\r\n" +
-                "timeout /t 3 /nobreak >nul\r\n" +
-                "if exist \"%~dp0OtoTag.jar.old\" del /Q \"%~dp0OtoTag.jar.old\"\r\n" +
-                "if exist \"%~dp0ototag-*.jsa\" del /Q \"%~dp0ototag-*.jsa\"\r\n" +
-                "ren \"%~dp0OtoTag.jar\" OtoTag.jar.old\r\n" +
-                "xcopy /E /Y /Q \"%~dp0update-new\\*\" \"%~dp0\" >nul\r\n" +
-                "start \"\" \"%~dp0OtoTag.exe\"\r\n")
-            ProcessBuilder("cmd", "/c", "start", "/min", bat.absolutePath)
-                .directory(appDir).start()
-            kotlin.system.exitProcess(0)
+            runBatAndExit("xcopy /E /Y /Q \"%~dp0update-new\\*\" \"%~dp0\" >nul")
         } catch (e: Exception) {
             SwingUtilities.invokeLater {
                 progress.dispose()
@@ -2225,8 +2275,9 @@ fun main() {
                         val sel = checkedRows()
                         if (sel.isNotEmpty() && JOptionPane.showConfirmDialog(frame,
                                 Strings.t("bulk_cover"), "OtoTag", JOptionPane.OK_CANCEL_OPTION) == JOptionPane.OK_OPTION) {
-                            val bytes = capCoverBytes(images[0].readBytes(), coverCapPx())
+                            val imgFile = images[0]; val cap = coverCapPx()
                             thread {
+                                val bytes = capCoverBytes(imgFile.readBytes(), cap)
                                 for (row in sel) {
                                     try {
                                         val cur = TagService.read(row.file)
