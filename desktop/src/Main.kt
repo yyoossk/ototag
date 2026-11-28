@@ -1862,7 +1862,7 @@ fun showRestoreWin() {
     dlg.isVisible = true
 }
 
-fun pickGenreWin(onPick: (String) -> Unit) {
+fun pickGenreWin(manageOnly: Boolean = false, onPick: (String) -> Unit) {
     val dlg = JDialog(frame, Strings.t("genre_pick"), true)
     val col = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
     fun confirmDelete(name: String, action: () -> Unit) {
@@ -1894,7 +1894,7 @@ fun pickGenreWin(onPick: (String) -> Unit) {
             for (g in mine) {
                 val row = JPanel(FlowLayout(FlowLayout.LEFT))
                 row.add(JButton(g).apply {
-                    addActionListener { dlg.dispose(); onPick(g) }
+                    addActionListener { if (!manageOnly) { dlg.dispose(); onPick(g) } }
                 })
                 row.add(JButton("\u2715").apply {
                     addActionListener {
@@ -1914,7 +1914,7 @@ fun pickGenreWin(onPick: (String) -> Unit) {
         for (g in GenreList.visibleDefaults(hiddenGenresWin())) {
             val row = JPanel(FlowLayout(FlowLayout.LEFT))
             row.add(JButton(g).apply {
-                addActionListener { dlg.dispose(); onPick(g) }
+                addActionListener { if (!manageOnly) { dlg.dispose(); onPick(g) } }
             })
             row.add(JButton("\u2715").apply {
                 addActionListener {
@@ -2415,6 +2415,9 @@ fun main() {
                 dlg.setSize(480, 320); dlg.setLocationRelativeTo(frame)
                 dlg.isVisible = true
             }
+        })
+        top.add(JButton(Strings.t("genre")).apply { vivid(this, 0xF97316) }.apply {
+            addActionListener { pickGenreWin(manageOnly = true) {} }
         })
         val langBox = JComboBox(Strings.LANGS.map { Strings.LANG_NAMES[it] }.toTypedArray())
         langBox.selectedIndex = Strings.LANGS.indexOf(Strings.lang)

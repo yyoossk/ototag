@@ -174,27 +174,37 @@ class EditActivity : Activity() {
             }
         }
         root.addView(coverView)
-        val coverBtns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        coverBtns.addView(Button(this).apply {
-            text = Strings.t("pick_image"); Ui.styleButton(this, Ui.MAGENTA)
-            setOnClickListener { pickImage() }
-        })
-        coverBtns.addView(Button(this).apply {
-            text = Strings.t("remove_cover"); Ui.styleButton(this, Ui.ORANGE)
-            setOnClickListener {
-                coverBytes = null; coverRemoved = true; coverPreview = null
-                hasOrigCover = false
-                coverView.setImageBitmap(null)
-            }
-        })
-        coverBtns.addView(Button(this).apply {
-            text = Strings.t("from_url"); Ui.styleButton(this, Ui.TEAL)
-            setOnClickListener { promptCoverUrl() }
-        })
-        coverBtns.addView(Button(this).apply {
-            text = Strings.t("from_clipboard"); Ui.styleButton(this, Ui.VIOLET)
-            setOnClickListener { pasteCoverFromClipboard() }
-        })
+        // Two rows of two equal buttons: four in one row squeezed
+        // the last one (From clipboard) off the edge.
+        val coverBtns = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        fun coverRow(): LinearLayout {
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            coverBtns.addView(row)
+            return row
+        }
+        fun coverBtn(row: LinearLayout, label: String, color: Int, fn: () -> Unit) {
+            row.addView(Button(this).apply {
+                text = label; textSize = 13f; isSingleLine = true
+                Ui.styleButton(this, color)
+                layoutParams = LinearLayout.LayoutParams(0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginEnd = 12; bottomMargin = 12
+                }
+                setOnClickListener { fn() }
+            })
+        }
+        val coverRow1 = coverRow()
+        coverBtn(coverRow1, Strings.t("pick_image"), Ui.MAGENTA) { pickImage() }
+        coverBtn(coverRow1, Strings.t("remove_cover"), Ui.ORANGE) {
+            coverBytes = null; coverRemoved = true; coverPreview = null
+            hasOrigCover = false
+            coverView.setImageBitmap(null)
+        }
+        val coverRow2 = coverRow()
+        coverBtn(coverRow2, Strings.t("from_url"), Ui.TEAL) { promptCoverUrl() }
+        coverBtn(coverRow2, Strings.t("from_clipboard"), Ui.VIOLET) {
+            pasteCoverFromClipboard()
+        }
         root.addView(coverBtns)
 
         val lyRow = LinearLayout(this).apply {

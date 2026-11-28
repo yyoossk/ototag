@@ -530,6 +530,11 @@ class MainActivity : Activity() {
                 .setPositiveButton(Strings.t("ok"), null)
                 .show()
         }
+        headBtn(Strings.t("genre"), Ui.ORANGE) {
+            GenrePicker.show(this, customGenres(), hiddenGenres(), removedGenres(),
+                { persistCustomGenres(it) }, { persistHiddenGenres(it) },
+                { persistRemovedGenres(it) }, manageOnly = true) {}
+        }
         root.addView(headerBtns)
 
         // top row: two equal buttons, same height

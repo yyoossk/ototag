@@ -145,6 +145,7 @@ object GenrePicker {
         persistCustom: (List<String>) -> Unit,
         persistHidden: (List<String>) -> Unit,
         persistRemovedCustom: (List<String>) -> Unit,
+        manageOnly: Boolean = false,
         onPick: (String) -> Unit
     ) {
         var mine = custom
@@ -246,7 +247,7 @@ object GenrePicker {
                             persistCustom(mine); persistRemovedCustom(trashed)
                             render()
                         }
-                    }) { dlg.dismiss(); onPick(g) })
+                    }, if (manageOnly) null else ({ dlg.dismiss(); onPick(g) })))
                 }
             }
             section(col, com.yyoo.ototag.core.Strings.t("genre_defaults"))
@@ -257,7 +258,7 @@ object GenrePicker {
                         persistHidden(gone)
                         render()
                     }
-                }) { dlg.dismiss(); onPick(g) })
+                }, if (manageOnly) null else ({ dlg.dismiss(); onPick(g) })))
             }
             // Removed genres stay out of this list: one entry opens
             // their own screen, where they can be restored.
