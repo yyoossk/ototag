@@ -1784,6 +1784,84 @@ fun persistHiddenGenresWin(list: List<String>) =
  * (with a confirmation); removed built-ins collect in a third group
  * where they can be restored.
  */
+fun removedGenresWin(): List<String> =
+    GenreList.parse(loadProps().getProperty("removed_genres"))
+
+fun persistRemovedGenresWin(list: List<String>) =
+    saveProp("removed_genres", GenreList.serialize(list))
+
+/**
+ * The removed genres live on their own dialog (opened from the genre
+ * picker): Restore all at the top, each genre with its own Restore
+ * button, and every restore asks first.
+ */
+fun showRestoreWin() {
+    val dlg = JDialog(frame, Strings.t("genre_removed"), true)
+    val col = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
+    fun confirm(message: String, action: () -> Unit) {
+        val res = JOptionPane.showConfirmDialog(dlg, message,
+            Strings.t("genre_restore"), JOptionPane.YES_NO_OPTION)
+        if (res == JOptionPane.YES_OPTION) action()
+    }
+    fun renderRestore() {
+        col.removeAll()
+        val defs = hiddenGenresWin().filter { it in TagData.GENRES }
+        val trashed = removedGenresWin()
+        if (defs.isEmpty() && trashed.isEmpty()) { dlg.dispose(); return }
+        col.add(JButton(Strings.t("genre_restore_all")).apply {
+            addActionListener {
+                confirm(Strings.t("genre_restore_all_confirm")) {
+                    persistHiddenGenresWin(emptyList())
+                    persistRemovedGenresWin(emptyList())
+                    renderRestore()
+                }
+            }
+        })
+        if (trashed.isNotEmpty()) {
+            col.add(JLabel(Strings.t("genre_mine")))
+            for (g in trashed) {
+                val row = JPanel(FlowLayout(FlowLayout.LEFT))
+                row.add(JLabel(g))
+                row.add(JButton(Strings.t("genre_restore")).apply {
+                    addActionListener {
+                        confirm(Strings.t("genre_restore_confirm")) {
+                            persistRemovedGenresWin(
+                                GenreList.remove(removedGenresWin(), g))
+                            persistCustomGenresWin(
+                                GenreList.add(customGenresWin(), g))
+                            renderRestore()
+                        }
+                    }
+                })
+                col.add(row)
+            }
+        }
+        if (defs.isNotEmpty()) {
+            col.add(JLabel(Strings.t("genre_defaults")))
+            for (g in defs) {
+                val row = JPanel(FlowLayout(FlowLayout.LEFT))
+                row.add(JLabel(g))
+                row.add(JButton(Strings.t("genre_restore")).apply {
+                    addActionListener {
+                        confirm(Strings.t("genre_restore_confirm")) {
+                            persistHiddenGenresWin(
+                                GenreList.unhide(hiddenGenresWin(), g))
+                            renderRestore()
+                        }
+                    }
+                })
+                col.add(row)
+            }
+        }
+        col.revalidate(); col.repaint()
+    }
+    renderRestore()
+    dlg.contentPane.add(JScrollPane(col))
+    dlg.setSize(360, 480)
+    dlg.setLocationRelativeTo(frame)
+    dlg.isVisible = true
+}
+
 fun pickGenreWin(onPick: (String) -> Unit) {
     val dlg = JDialog(frame, Strings.t("genre_pick"), true)
     val col = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
@@ -1794,6 +1872,22 @@ fun pickGenreWin(onPick: (String) -> Unit) {
     }
     fun render() {
         col.removeAll()
+        // Add a genre right here: type a name and click Add.
+        val addRow = JPanel(FlowLayout(FlowLayout.LEFT))
+        val input = JTextField(16)
+        addRow.add(input)
+        addRow.add(JButton(Strings.t("genre_add")).apply {
+            addActionListener {
+                val now = GenreList.add(customGenresWin(), input.text)
+                if (now != customGenresWin()) {
+                    persistCustomGenresWin(now)
+                    persistRemovedGenresWin(
+                        GenreList.remove(removedGenresWin(), input.text.trim()))
+                    render()
+                }
+            }
+        })
+        col.add(addRow)
         val mine = customGenresWin()
         if (mine.isNotEmpty()) {
             col.add(JLabel(Strings.t("genre_mine")))
@@ -1805,7 +1899,10 @@ fun pickGenreWin(onPick: (String) -> Unit) {
                 row.add(JButton("\u2715").apply {
                     addActionListener {
                         confirmDelete(g) {
-                            persistCustomGenresWin(GenreList.remove(customGenresWin(), g))
+                            persistCustomGenresWin(
+                                GenreList.remove(customGenresWin(), g))
+                            persistRemovedGenresWin(
+                                GenreList.trash(removedGenresWin(), g))
                             render()
                         }
                     }
@@ -1830,21 +1927,13 @@ fun pickGenreWin(onPick: (String) -> Unit) {
             })
             col.add(row)
         }
-        val restorable = hiddenGenresWin().filter { it in TagData.GENRES }
-        if (restorable.isNotEmpty()) {
-            col.add(JLabel(Strings.t("genre_hidden")))
-            for (g in restorable) {
-                val row = JPanel(FlowLayout(FlowLayout.LEFT))
-                row.add(JLabel(g))
-                row.add(JButton(Strings.t("genre_restore")).apply {
-                    addActionListener {
-                        persistHiddenGenresWin(
-                            GenreList.unhide(hiddenGenresWin(), g))
-                        render()
-                    }
-                })
-                col.add(row)
-            }
+        // Removed genres stay out of this list: one button opens
+        // their own dialog, where they can be restored.
+        if (removedGenresWin().isNotEmpty() ||
+            hiddenGenresWin().any { it in TagData.GENRES }) {
+            col.add(JButton(Strings.t("genre_removed")).apply {
+                addActionListener { showRestoreWin(); render() }
+            })
         }
         col.revalidate(); col.repaint()
     }

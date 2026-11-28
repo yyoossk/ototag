@@ -190,6 +190,8 @@ fun main() {
     check("genre hide", GenreList.hide(emptyList(), "Rock") == listOf("Rock"))
     check("genre hide custom no-op", GenreList.hide(emptyList(), "City Pop X") == emptyList<String>())
     check("genre unhide", GenreList.unhide(listOf("Rock"), "Rock") == emptyList<String>())
+    check("genre trash", GenreList.trash(emptyList(), "My Genre") == listOf("My Genre"))
+    check("genre trash dup", GenreList.trash(listOf("My Genre"), "My Genre") == listOf("My Genre"))
 
     // --- disguised container: a real MP4 carrying an .mp3 name (YouTube download) ---
     val work2 = File("testwork"); work2.mkdirs()

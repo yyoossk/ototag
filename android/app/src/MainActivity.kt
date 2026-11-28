@@ -935,6 +935,13 @@ class MainActivity : Activity() {
         prefs.edit().putString("hidden_genres", GenreList.serialize(list)).apply()
     }
 
+    private fun removedGenres(): List<String> =
+        GenreList.parse(prefs.getString("removed_genres", ""))
+
+    private fun persistRemovedGenres(list: List<String>) {
+        prefs.edit().putString("removed_genres", GenreList.serialize(list)).apply()
+    }
+
     private fun bulkEditSelected() {
         val sel = checkedItems()
         if (sel.isEmpty()) { toast(Strings.t("select_some")); return }
@@ -950,7 +957,8 @@ class MainActivity : Activity() {
                     text = Strings.t("genre_pick")
                     setOnClickListener {
                         GenrePicker.show(this@MainActivity, customGenres(), hiddenGenres(),
-                            { persistCustomGenres(it) }, { persistHiddenGenres(it) }) { g -> et.setText(g) }
+                            removedGenres(), { persistCustomGenres(it) },
+                            { persistHiddenGenres(it) }, { persistRemovedGenres(it) }) { g -> et.setText(g) }
                     }
                 })
                 btns.addView(Button(this).apply {

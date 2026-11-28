@@ -144,7 +144,8 @@ class EditActivity : Activity() {
                     text = Strings.t("genre_pick"); Ui.styleButton(this, Ui.TEAL)
                     setOnClickListener {
                         GenrePicker.show(this@EditActivity, customGenres(), hiddenGenres(),
-                            { persistCustomGenres(it) }, { persistHiddenGenres(it) }) { g -> et.setText(g) }
+                            removedGenres(), { persistCustomGenres(it) },
+                            { persistHiddenGenres(it) }, { persistRemovedGenres(it) }) { g -> et.setText(g) }
                     }
                 })
                 btns.addView(Button(this).apply {
@@ -284,6 +285,14 @@ class EditActivity : Activity() {
     private fun persistHiddenGenres(list: List<String>) {
         getSharedPreferences("ototag", MODE_PRIVATE).edit()
             .putString("hidden_genres", GenreList.serialize(list)).apply()
+    }
+
+    private fun removedGenres(): List<String> = GenreList.parse(
+        getSharedPreferences("ototag", MODE_PRIVATE).getString("removed_genres", ""))
+
+    private fun persistRemovedGenres(list: List<String>) {
+        getSharedPreferences("ototag", MODE_PRIVATE).edit()
+            .putString("removed_genres", GenreList.serialize(list)).apply()
     }
 
     private fun togglePlay() {

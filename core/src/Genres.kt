@@ -32,4 +32,13 @@ object GenreList {
 
     /** Brings a removed built-in genre back. */
     fun unhide(hidden: List<String>, genre: String): List<String> = hidden - genre
+
+    /**
+     * Moves a name onto a removed list (its own genres use a separate
+     * list from the hidden built-ins). Restoring is [remove] on it.
+     */
+    fun trash(removed: List<String>, name: String): List<String> {
+        val g = name.trim()
+        return if (g.isBlank() || g in removed) removed else removed + g
+    }
 }
