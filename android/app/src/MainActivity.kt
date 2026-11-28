@@ -779,17 +779,22 @@ class MainActivity : Activity() {
                     onStop = { adapter.notifyDataSetChanged() },
                     bulk = sel.size > 1
                 ) { picked ->
-                    // Partial sources (Audius / NDL) only fill what they know;
-                    // keep the file's own values for everything else.
-                    val merged = if (picked.partial)
-                        picked.mergedOver(fullTag ?: TagData()) else picked
-                    // The cover cap applies to covers the candidate brought;
-                    // a cover the file already had is left as it is.
-                    val newTag = if (picked.cover != null)
-                        merged.copy(cover = SafStore.capCover(merged.cover,
-                            prefs.getInt("cover_cap", 0)))
-                    else merged
+                    // The merge and the cover cap run in the write thread
+                    // below, not here: capping decodes and re-encodes the
+                    // cover, and doing that on the UI thread froze touches
+                    // for big covers after an apply.
+                    val cap = prefs.getInt("cover_cap", 0)
                     thread {
+                        // Partial sources (Audius / NDL) only fill what they
+                        // know; keep the file's own values for the rest.
+                        val merged = if (picked.partial)
+                            picked.mergedOver(fullTag ?: TagData()) else picked
+                        // The cover cap applies to covers the candidate
+                        // brought; a cover the file already had is left
+                        // as it is.
+                        val newTag = if (picked.cover != null)
+                            merged.copy(cover = SafStore.capCover(merged.cover, cap))
+                        else merged
                         var ok = false
                         try {
                             SafStore.ensureLocal(this@MainActivity, item)
@@ -856,7 +861,15 @@ class MainActivity : Activity() {
             .setCancelable(false)
         newTag.cover?.let { bytes ->
             try {
-                val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                // The dialog icon is small: decode sampled, never at
+                // full size on the UI thread.
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                var sample = 1
+                while (bounds.outWidth / sample > 256 || bounds.outHeight / sample > 256)
+                    sample *= 2
+                val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+                val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
                 if (bmp != null) b.setIcon(android.graphics.drawable.BitmapDrawable(resources, bmp))
             } catch (e: Exception) { }
         }
