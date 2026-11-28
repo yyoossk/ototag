@@ -176,6 +176,15 @@ fun main() {
     check("history body old ja", UpdateChecker.localizedBody(bilinOld, "ja") == "日本語の注記。\n\n続き。")
     check("history body old en", UpdateChecker.localizedBody(bilinOld, "en") == "English note.\n\nMore English.")
 
+    // --- custom genre list ---
+    check("genre parse", GenreList.parse("Rock\n\n City Pop \nRock") == listOf("Rock", "City Pop"))
+    check("genre add", GenreList.add(listOf("Rock"), "City Pop") == listOf("Rock", "City Pop"))
+    check("genre add dup", GenreList.add(listOf("Rock"), "Rock") == listOf("Rock"))
+    check("genre add builtin", GenreList.add(emptyList(), "Rock") == emptyList<String>())
+    check("genre add blank", GenreList.add(listOf("Rock"), "  ") == listOf("Rock"))
+    check("genre remove", GenreList.remove(listOf("Rock", "City Pop"), "Rock") == listOf("City Pop"))
+    check("genre roundtrip", GenreList.parse(GenreList.serialize(listOf("A", "B"))) == listOf("A", "B"))
+
     // --- disguised container: a real MP4 carrying an .mp3 name (YouTube download) ---
     val work2 = File("testwork"); work2.mkdirs()
     val realM4a = File(work2, "real.m4a")

@@ -609,6 +609,17 @@ class MainActivity : Activity() {
             text = Strings.t("back_to_top")
             setOnClickListener { listView.setSelection(0) }
         })
+        filterRow.addView(Button(this).apply {
+            text = Strings.t("select_all")
+            setOnClickListener {
+                // Toggle over what is currently shown (after filters).
+                val shown = shownItems()
+                val target = shown.any { !it.checked }
+                for (it in shown) it.checked = target
+                text = Strings.t(if (target) "select_none" else "select_all")
+                adapter.notifyDataSetChanged()
+            }
+        })
         root.addView(filterRow)
 
         // Quick-filter bar (set by tapping an artist/album in a row).
@@ -744,7 +755,8 @@ class MainActivity : Activity() {
 
     private fun editSelected() {
         val sel = checkedItems()
-        if (sel.size != 1) { toast(Strings.t("select_one")); return }
+        if (sel.isEmpty()) { toast(Strings.t("select_some")); return }
+        if (sel.size > 1) { bulkEditSelected(); return }
         lastEdited = sel[0]
         val i = Intent(this, EditActivity::class.java)
         i.putExtra("index", Items.list.indexOf(sel[0]))
@@ -897,15 +909,41 @@ class MainActivity : Activity() {
         b.show()
     }
 
+    private fun customGenres(): List<String> =
+        GenreList.parse(prefs.getString("custom_genres", ""))
+
+    private fun persistCustomGenres(list: List<String>) {
+        prefs.edit().putString("custom_genres", GenreList.serialize(list)).apply()
+    }
+
     private fun bulkEditSelected() {
         val sel = checkedItems()
         if (sel.isEmpty()) { toast(Strings.t("select_some")); return }
-        val fields = listOf("album", "album_artist", "genre", "year", "disc", "composer")
+        val fields = listOf("artist", "album", "album_artist", "composer", "genre", "year", "disc")
         val inputs = HashMap<String, EditText>()
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(40, 20, 40, 0) }
         for (f in fields) {
             layout.addView(TextView(this).apply { text = Strings.t(f) })
             val et = EditText(this); inputs[f] = et; layout.addView(et)
+            if (f == "genre") {
+                val btns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                btns.addView(Button(this).apply {
+                    text = Strings.t("genre_pick")
+                    setOnClickListener {
+                        GenrePicker.show(this@MainActivity, customGenres(),
+                            { persistCustomGenres(it) }) { g -> et.setText(g) }
+                    }
+                })
+                btns.addView(Button(this).apply {
+                    text = Strings.t("genre_save")
+                    setOnClickListener {
+                        val now = GenreList.add(customGenres(), et.text.toString())
+                        persistCustomGenres(now)
+                        toast(Strings.t("done"))
+                    }
+                })
+                layout.addView(btns)
+            }
         }
         var coverBytes: ByteArray? = null
         layout.addView(Button(this).apply {
@@ -934,7 +972,8 @@ class MainActivity : Activity() {
                             SafStore.ensureLocal(this, item)
                             val cur = TagService.read(item.local!!)
                             val d = TagData(
-                                title = cur.title, artist = cur.artist,
+                                title = cur.title,
+                                artist = inputs["artist"]!!.text.toString().ifBlank { cur.artist },
                                 album = inputs["album"]!!.text.toString().ifBlank { cur.album },
                                 albumArtist = inputs["album_artist"]!!.text.toString().ifBlank { cur.albumArtist },
                                 composer = inputs["composer"]!!.text.toString().ifBlank { cur.composer },

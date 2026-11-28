@@ -1329,17 +1329,22 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
         addField("title", d.title); addField("artist", d.artist); addField("album", d.album)
         addField("album_artist", d.albumArtist); addField("composer", d.composer)
         addField("genre", d.genre)
-        // Quick genre picks next to the (still freely editable) field.
+        // Genre picks next to the (still freely editable) field: the
+        // chooser shows the user's own genres (deletable) apart from
+        // the built-ins, and the typed text can be saved as an own genre.
         gc.gridx = 1; gc.gridy = y
-        panel.add(JButton("▼ " + Strings.t("genre")).apply {
+        val genreBtns = JPanel(FlowLayout(FlowLayout.LEFT))
+        genreBtns.add(JButton(Strings.t("genre_pick")).apply {
+            addActionListener { pickGenreWin { g -> fields["genre"]?.text = g } }
+        })
+        genreBtns.add(JButton(Strings.t("genre_save")).apply {
             addActionListener {
-                val pick = JOptionPane.showInputDialog(this@EditDialog,
-                    Strings.t("genre"), Strings.t("genre"),
-                    JOptionPane.PLAIN_MESSAGE, null,
-                    TagData.GENRES.toTypedArray(), fields["genre"]?.text ?: "") as? String
-                if (pick != null) fields["genre"]?.text = pick
+                persistCustomGenresWin(GenreList.add(customGenresWin(),
+                    fields["genre"]?.text ?: ""))
+                info(Strings.t("done"))
             }
-        }, gc); y++
+        })
+        panel.add(genreBtns, gc); y++
         addField("year", d.year)
         addField("track", d.track); addField("track_total", d.trackTotal)
         addField("disc", d.disc); addField("disc_total", d.discTotal)
@@ -1741,15 +1746,79 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
     }
 }
 
+fun customGenresWin(): List<String> =
+    GenreList.parse(loadProps().getProperty("custom_genres"))
+
+fun persistCustomGenresWin(list: List<String>) =
+    saveProp("custom_genres", GenreList.serialize(list))
+
+/**
+ * Genre chooser: the user's own genres first (each with a delete
+ * button), then the built-in TagData.GENRES, the groups kept apart.
+ */
+fun pickGenreWin(onPick: (String) -> Unit) {
+    val dlg = JDialog(frame, Strings.t("genre_pick"), true)
+    val col = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
+    fun render() {
+        col.removeAll()
+        val mine = customGenresWin()
+        if (mine.isNotEmpty()) {
+            col.add(JLabel(Strings.t("genre_mine")))
+            for (g in mine) {
+                val row = JPanel(FlowLayout(FlowLayout.LEFT))
+                row.add(JButton(g).apply {
+                    addActionListener { dlg.dispose(); onPick(g) }
+                })
+                row.add(JButton("\u2715").apply {
+                    addActionListener {
+                        persistCustomGenresWin(GenreList.remove(customGenresWin(), g))
+                        render()
+                    }
+                })
+                col.add(row)
+            }
+        }
+        col.add(JLabel(Strings.t("genre_defaults")))
+        for (g in TagData.GENRES) {
+            val row = JPanel(FlowLayout(FlowLayout.LEFT))
+            row.add(JButton(g).apply {
+                addActionListener { dlg.dispose(); onPick(g) }
+            })
+            col.add(row)
+        }
+        col.revalidate(); col.repaint()
+    }
+    render()
+    dlg.contentPane.add(JScrollPane(col))
+    dlg.setSize(360, 480)
+    dlg.setLocationRelativeTo(frame)
+    dlg.isVisible = true
+}
+
 fun bulkEdit() {
     val sel = checkedRows()
     if (sel.isEmpty()) { info(Strings.t("select_some")); return }
-    val keys = listOf("album", "album_artist", "genre", "year", "disc", "composer")
+    val keys = listOf("artist", "album", "album_artist", "composer", "genre", "year", "disc")
     val inputs = HashMap<String, JTextField>()
-    val panel = JPanel(GridLayout(keys.size + 1, 2, 6, 6))
+    val panel = JPanel(GridLayout(0, 2, 6, 6))
     for (k in keys) {
         panel.add(JLabel(Strings.t(k)))
         val tf = JTextField(24); inputs[k] = tf; panel.add(tf)
+        if (k == "genre") {
+            panel.add(JLabel(""))
+            val btns = JPanel(FlowLayout(FlowLayout.LEFT))
+            btns.add(JButton(Strings.t("genre_pick")).apply {
+                addActionListener { pickGenreWin { g -> inputs["genre"]?.text = g } }
+            })
+            btns.add(JButton(Strings.t("genre_save")).apply {
+                addActionListener {
+                    persistCustomGenresWin(GenreList.add(customGenresWin(),
+                        inputs["genre"]?.text ?: ""))
+                    info(Strings.t("done"))
+                }
+            })
+            panel.add(btns)
+        }
     }
     var coverBytes: ByteArray? = null
     panel.add(JLabel(Strings.t("cover")))
@@ -1776,11 +1845,12 @@ fun bulkEdit() {
                 // Full read: the write needs the cover bytes the list drops.
                 val cur = TagService.read(row.file)
                 fun v(k: String) = inputs[k]!!.text.ifBlank { when (k) {
+                    "artist" -> cur.artist
                     "album" -> cur.album; "album_artist" -> cur.albumArtist
                     "genre" -> cur.genre; "year" -> cur.year; "disc" -> cur.disc
                     else -> cur.composer } }
                 val d = TagData(
-                    title = cur.title, artist = cur.artist, album = v("album"),
+                    title = cur.title, artist = v("artist"), album = v("album"),
                     albumArtist = v("album_artist"), composer = v("composer"), genre = v("genre"),
                     year = v("year"), track = cur.track, trackTotal = cur.trackTotal,
                     disc = v("disc"), discTotal = cur.discTotal, comment = cur.comment,
@@ -2214,7 +2284,11 @@ fun main() {
         actions.add(JButton(Strings.t("edit")).apply { vivid(this, 0x6D28D9) }.apply {
             addActionListener {
                 val sel = checkedRows()
-                if (sel.size != 1) info(Strings.t("select_one")) else EditDialog(sel[0]).isVisible = true
+                when {
+                    sel.isEmpty() -> info(Strings.t("select_some"))
+                    sel.size > 1 -> bulkEdit()
+                    else -> EditDialog(sel[0]).isVisible = true
+                }
             }
         })
         actions.add(JButton(Strings.t("play")).apply { vivid(this, 0x0D9488) }.apply {
@@ -2229,6 +2303,16 @@ fun main() {
         actions.add(JButton(Strings.t("rename")).apply { vivid(this, 0xF97316); addActionListener { bulkRename() } })
         actions.add(JButton(Strings.t("undo")).apply { vivid(this, 0x64748B); addActionListener { undoSelected() } })
         actions.add(JButton(Strings.t("delete_file")).apply { vivid(this, 0xBE2828); addActionListener { deleteSelected() } })
+        val selectAllBtn = JButton(Strings.t("select_all"))
+        selectAllBtn.addActionListener {
+            // Toggle over what is currently shown (after filters).
+            val shown = shownRows()
+            val target = shown.any { !it.checked }
+            for (r in shown) r.checked = target
+            selectAllBtn.text = Strings.t(if (target) "select_none" else "select_all")
+            refresh()
+        }
+        actions.add(selectAllBtn)
 
         quickBar = JLabel("").apply {
             foreground = Color(0x6D, 0x28, 0xD9)

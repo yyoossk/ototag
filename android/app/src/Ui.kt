@@ -130,3 +130,73 @@ object Ui {
         btn.stateListAnimator = null
     }
 }
+
+/**
+ * Genre chooser shared by the editor and the bulk editor: the user's
+ * own genres first (each with a delete button), then the built-in
+ * TagData.GENRES, the two groups kept apart. Tapping a name picks it.
+ */
+object GenrePicker {
+    fun show(
+        ctx: android.app.Activity,
+        custom: List<String>,
+        persist: (List<String>) -> Unit,
+        onPick: (String) -> Unit
+    ) {
+        var mine = custom
+        val scroll = android.widget.ScrollView(ctx)
+        val col = android.widget.LinearLayout(ctx).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            setPadding(48, 16, 48, 8)
+        }
+        scroll.addView(col)
+        val dlg = android.app.AlertDialog.Builder(ctx)
+            .setTitle(com.yyoo.ototag.core.Strings.t("genre_pick"))
+            .setView(scroll)
+            .setNegativeButton(com.yyoo.ototag.core.Strings.t("cancel"), null)
+            .create()
+        fun dp(v: Int) = (v * ctx.resources.displayMetrics.density).toInt()
+        fun section(text: String) {
+            col.addView(android.widget.TextView(ctx).apply {
+                this.text = text; textSize = 13f; setTextColor(Ui.SUB)
+                setPadding(0, dp(12), 0, dp(4))
+            })
+        }
+        fun nameRow(name: String, onClick: () -> Unit) =
+            android.widget.TextView(ctx).apply {
+                text = name; textSize = 17f; setTextColor(Ui.INK)
+                setPadding(0, dp(10), 0, dp(10))
+                setOnClickListener { onClick() }
+            }
+        fun render() {
+            col.removeAllViews()
+            if (mine.isNotEmpty()) {
+                section(com.yyoo.ototag.core.Strings.t("genre_mine"))
+                for (g in mine) {
+                    val row = android.widget.LinearLayout(ctx).apply {
+                        orientation = android.widget.LinearLayout.HORIZONTAL
+                        gravity = android.view.Gravity.CENTER_VERTICAL
+                    }
+                    val tv = nameRow(g) { dlg.dismiss(); onPick(g) }
+                    tv.layoutParams = android.widget.LinearLayout.LayoutParams(0,
+                        android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    row.addView(tv)
+                    row.addView(Button(ctx).apply {
+                        text = "✕"
+                        setOnClickListener {
+                            mine = com.yyoo.ototag.core.GenreList.remove(mine, g)
+                            persist(mine)
+                            render()
+                        }
+                    })
+                    col.addView(row)
+                }
+            }
+            section(com.yyoo.ototag.core.Strings.t("genre_defaults"))
+            for (g in com.yyoo.ototag.core.TagData.GENRES)
+                col.addView(nameRow(g) { dlg.dismiss(); onPick(g) })
+        }
+        render()
+        dlg.show()
+    }
+}

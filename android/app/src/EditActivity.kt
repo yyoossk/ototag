@@ -134,6 +134,29 @@ class EditActivity : Activity() {
                 }
             } else EditText(this)
             inputs[k] = et; root.addView(et)
+            if (k == "genre") {
+                // Pick from the separated lists (own genres with delete,
+                // then the built-ins), or save the typed text as an own
+                // genre. The field itself stays a plain text input.
+                val btns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                btns.addView(Button(this).apply {
+                    text = Strings.t("genre_pick"); Ui.styleButton(this, Ui.TEAL)
+                    setOnClickListener {
+                        GenrePicker.show(this@EditActivity, customGenres(),
+                            { persistCustomGenres(it) }) { g -> et.setText(g) }
+                    }
+                })
+                btns.addView(Button(this).apply {
+                    text = Strings.t("genre_save"); Ui.styleButton(this, Ui.VIOLET)
+                    setOnClickListener {
+                        persistCustomGenres(GenreList.add(customGenres(),
+                            et.text.toString()))
+                        Toast.makeText(this@EditActivity, Strings.t("done"),
+                            Toast.LENGTH_SHORT).show()
+                    }
+                })
+                root.addView(btns)
+            }
             watchField(k, et)
         }
 
@@ -244,6 +267,14 @@ class EditActivity : Activity() {
         root.addView(btns)
 
         setContentView(scroll)
+    }
+
+    private fun customGenres(): List<String> = GenreList.parse(
+        getSharedPreferences("ototag", MODE_PRIVATE).getString("custom_genres", ""))
+
+    private fun persistCustomGenres(list: List<String>) {
+        getSharedPreferences("ototag", MODE_PRIVATE).edit()
+            .putString("custom_genres", GenreList.serialize(list)).apply()
     }
 
     private fun togglePlay() {
