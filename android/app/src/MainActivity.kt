@@ -609,17 +609,19 @@ class MainActivity : Activity() {
             text = Strings.t("back_to_top")
             setOnClickListener { listView.setSelection(0) }
         })
-        filterRow.addView(Button(this).apply {
+        selectAllBtn = Button(this).apply {
             text = Strings.t("select_all")
             setOnClickListener {
-                // Toggle over what is currently shown (after filters).
+                // Toggle over what is currently shown (after filters):
+                // anything checked clears, nothing checked selects all.
                 val shown = shownItems()
-                val target = shown.any { !it.checked }
+                val target = shown.none { it.checked }
                 for (it in shown) it.checked = target
-                text = Strings.t(if (target) "select_none" else "select_all")
                 adapter.notifyDataSetChanged()
+                updateSelectAllLabel()
             }
-        })
+        }
+        filterRow.addView(selectAllBtn)
         root.addView(filterRow)
 
         // Quick-filter bar (set by tapping an artist/album in a row).
@@ -907,6 +909,16 @@ class MainActivity : Activity() {
             b.setPositiveButton(Strings.t("ok")) { _, _ -> done() }
         }
         b.show()
+    }
+
+    private var selectAllBtn: Button? = null
+
+    /** The toggle's label follows the checks: anything checked (by hand
+     *  or by the button) offers Deselect all, otherwise Select all. */
+    private fun updateSelectAllLabel() {
+        val b = selectAllBtn ?: return
+        val anyChecked = shownItems().any { it.checked }
+        b.text = Strings.t(if (anyChecked) "select_none" else "select_all")
     }
 
     private fun customGenres(): List<String> =
@@ -1372,6 +1384,11 @@ class MainActivity : Activity() {
     }
 
     inner class ItemAdapter : BaseAdapter() {
+        override fun notifyDataSetChanged() {
+            super.notifyDataSetChanged()
+            updateSelectAllLabel()
+        }
+
         override fun getCount() = displayRows().size
         override fun getItem(pos: Int) = displayRows()[pos]
         override fun getItemId(pos: Int) = pos.toLong()
@@ -1441,7 +1458,10 @@ class MainActivity : Activity() {
             bindSub(h.sub, item)
             h.cb.setOnCheckedChangeListener(null)
             h.cb.isChecked = item.checked
-            h.cb.setOnCheckedChangeListener { _, v -> item.checked = v }
+            h.cb.setOnCheckedChangeListener { _, v ->
+                item.checked = v
+                updateSelectAllLabel()
+            }
             h.cover.setOnClickListener { togglePlay(item) }
             row.setOnClickListener { togglePlay(item) }
             if (item == playingItem && player != null) {

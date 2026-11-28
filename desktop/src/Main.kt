@@ -333,7 +333,10 @@ class RowModel : AbstractTableModel() {
     }
     override fun setValueAt(v: Any?, r: Int, c: Int) {
         val disp = displayRows()[r]
-        if (c == 0 && disp is Row) { disp.checked = v as Boolean; fireTableCellUpdated(r, c) }
+        if (c == 0 && disp is Row) {
+            disp.checked = v as Boolean; fireTableCellUpdated(r, c)
+            updateSelectAllLabelWin()
+        }
     }
 }
 
@@ -349,6 +352,7 @@ fun badgesOf(row: Row): String {
 fun refresh() {
     listVersion++
     SwingUtilities.invokeLater { model.fireTableDataChanged() }
+    updateSelectAllLabelWin()
 }
 
 /** Shows or hides the quick-filter bar to match [quickFilter]. */
@@ -1746,6 +1750,18 @@ class EditDialog(private val row: Row) : JDialog(frame, row.file.name, true) {
     }
 }
 
+var selectAllButton: JButton? = null
+
+/** The toggle's label follows the checks: anything checked (by hand
+ *  or by the button) offers Deselect all, otherwise Select all. */
+fun updateSelectAllLabelWin() {
+    val b = selectAllButton ?: return
+    val anyChecked = shownRows().any { it.checked }
+    SwingUtilities.invokeLater {
+        b.text = Strings.t(if (anyChecked) "select_none" else "select_all")
+    }
+}
+
 fun customGenresWin(): List<String> =
     GenreList.parse(loadProps().getProperty("custom_genres"))
 
@@ -2304,13 +2320,15 @@ fun main() {
         actions.add(JButton(Strings.t("undo")).apply { vivid(this, 0x64748B); addActionListener { undoSelected() } })
         actions.add(JButton(Strings.t("delete_file")).apply { vivid(this, 0xBE2828); addActionListener { deleteSelected() } })
         val selectAllBtn = JButton(Strings.t("select_all"))
+        selectAllButton = selectAllBtn
         selectAllBtn.addActionListener {
-            // Toggle over what is currently shown (after filters).
+            // Toggle over what is currently shown (after filters):
+            // anything checked clears, nothing checked selects all.
             val shown = shownRows()
-            val target = shown.any { !it.checked }
+            val target = shown.none { it.checked }
             for (r in shown) r.checked = target
-            selectAllBtn.text = Strings.t(if (target) "select_none" else "select_all")
             refresh()
+            updateSelectAllLabelWin()
         }
         actions.add(selectAllBtn)
 
