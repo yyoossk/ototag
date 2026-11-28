@@ -105,9 +105,8 @@ object UpdateChecker {
         val text = body.replace("\r\n", "\n")
         val sections = text.split(Regex("(?m)^---[ \t]*$"))
         var picked = when {
-            sections.size < 2 -> text
-            lang == "ja" -> sections.last()
-            else -> sections.first()
+            sections.size >= 2 -> if (lang == "ja") sections.last() else sections.first()
+            else -> splitBilingual(text, lang)
         }.trim()
         val lines = picked.lines().toMutableList()
         if (lines.isNotEmpty()) {
@@ -116,6 +115,21 @@ object UpdateChecker {
                 lines.removeAt(0)
         }
         return lines.joinToString("\n").trim()
+    }
+
+    /**
+     * Bodies written before the "---" separator convention are one
+     * English block followed by one Japanese block. The Japanese block
+     * starts at the first line containing kana or kanji.
+     */
+    private fun splitBilingual(text: String, lang: String): String {
+        val lines = text.lines()
+        val firstJa = lines.indexOfFirst { line ->
+            line.any { it in '぀'..'ヿ' || it in '一'..'鿿' }
+        }
+        if (firstJa < 0) return text
+        return if (lang == "ja") lines.drop(firstJa).joinToString("\n")
+            else lines.take(firstJa).joinToString("\n")
     }
 
     /** True when [latest] is a newer build stamp than [current]. */

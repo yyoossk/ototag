@@ -61,7 +61,10 @@ class HistoryActivity : Activity() {
                     })
                     if (r.body.isNotBlank()) {
                         card.addView(TextView(this).apply {
-                            text = UpdateChecker.localizedBody(r.body, Strings.lang)
+                            // The history is shown in the system language
+                            // only, whatever the in-app language setting.
+                            text = UpdateChecker.localizedBody(r.body,
+                                java.util.Locale.getDefault().language)
                             textSize = 14f
                             setTextColor(Ui.INK)
                             setPadding(0, dp(6), 0, 0)

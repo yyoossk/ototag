@@ -170,6 +170,11 @@ fun main() {
     check("history body fr falls back to en", UpdateChecker.localizedBody(bilin, "fr") == "English note.")
     check("history body ja", UpdateChecker.localizedBody(bilin, "ja") == "Japanese note.")
     check("history body single block", UpdateChecker.localizedBody("OtoTag 20261127-0644\n\nOnly block.", "ja") == "Only block.")
+    // Older notes have no --- line: an English block, then a Japanese
+    // block. The split is the first line containing Japanese.
+    val bilinOld = "English note.\n\nMore English.\n\n日本語の注記。\n\n続き。"
+    check("history body old ja", UpdateChecker.localizedBody(bilinOld, "ja") == "日本語の注記。\n\n続き。")
+    check("history body old en", UpdateChecker.localizedBody(bilinOld, "en") == "English note.\n\nMore English.")
 
     // --- disguised container: a real MP4 carrying an .mp3 name (YouTube download) ---
     val work2 = File("testwork"); work2.mkdirs()
