@@ -21,4 +21,15 @@ object GenreList {
     }
 
     fun remove(list: List<String>, genre: String): List<String> = list - genre
+
+    /** The built-in genres the user has not removed. */
+    fun visibleDefaults(hidden: List<String>): List<String> =
+        TagData.GENRES.filter { it !in hidden }
+
+    /** Removes a built-in genre (it can be restored later). */
+    fun hide(hidden: List<String>, genre: String): List<String> =
+        if (genre in hidden || genre !in TagData.GENRES) hidden else hidden + genre
+
+    /** Brings a removed built-in genre back. */
+    fun unhide(hidden: List<String>, genre: String): List<String> = hidden - genre
 }

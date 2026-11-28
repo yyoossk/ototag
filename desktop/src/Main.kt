@@ -1772,9 +1772,26 @@ fun persistCustomGenresWin(list: List<String>) =
  * Genre chooser: the user's own genres first (each with a delete
  * button), then the built-in TagData.GENRES, the groups kept apart.
  */
+fun hiddenGenresWin(): List<String> =
+    GenreList.parse(loadProps().getProperty("hidden_genres"))
+
+fun persistHiddenGenresWin(list: List<String>) =
+    saveProp("hidden_genres", GenreList.serialize(list))
+
+/**
+ * Genre chooser: the user's own genres first, then the built-in
+ * TagData.GENRES, the groups kept apart. Both groups can be deleted
+ * (with a confirmation); removed built-ins collect in a third group
+ * where they can be restored.
+ */
 fun pickGenreWin(onPick: (String) -> Unit) {
     val dlg = JDialog(frame, Strings.t("genre_pick"), true)
     val col = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
+    fun confirmDelete(name: String, action: () -> Unit) {
+        val res = JOptionPane.showConfirmDialog(dlg,
+            Strings.t("genre_del_confirm"), name, JOptionPane.YES_NO_OPTION)
+        if (res == JOptionPane.YES_OPTION) action()
+    }
     fun render() {
         col.removeAll()
         val mine = customGenresWin()
@@ -1787,20 +1804,47 @@ fun pickGenreWin(onPick: (String) -> Unit) {
                 })
                 row.add(JButton("\u2715").apply {
                     addActionListener {
-                        persistCustomGenresWin(GenreList.remove(customGenresWin(), g))
-                        render()
+                        confirmDelete(g) {
+                            persistCustomGenresWin(GenreList.remove(customGenresWin(), g))
+                            render()
+                        }
                     }
                 })
                 col.add(row)
             }
         }
         col.add(JLabel(Strings.t("genre_defaults")))
-        for (g in TagData.GENRES) {
+        for (g in GenreList.visibleDefaults(hiddenGenresWin())) {
             val row = JPanel(FlowLayout(FlowLayout.LEFT))
             row.add(JButton(g).apply {
                 addActionListener { dlg.dispose(); onPick(g) }
             })
+            row.add(JButton("\u2715").apply {
+                addActionListener {
+                    confirmDelete(g) {
+                        persistHiddenGenresWin(
+                            GenreList.hide(hiddenGenresWin(), g))
+                        render()
+                    }
+                }
+            })
             col.add(row)
+        }
+        val restorable = hiddenGenresWin().filter { it in TagData.GENRES }
+        if (restorable.isNotEmpty()) {
+            col.add(JLabel(Strings.t("genre_hidden")))
+            for (g in restorable) {
+                val row = JPanel(FlowLayout(FlowLayout.LEFT))
+                row.add(JLabel(g))
+                row.add(JButton(Strings.t("genre_restore")).apply {
+                    addActionListener {
+                        persistHiddenGenresWin(
+                            GenreList.unhide(hiddenGenresWin(), g))
+                        render()
+                    }
+                })
+                col.add(row)
+            }
         }
         col.revalidate(); col.repaint()
     }

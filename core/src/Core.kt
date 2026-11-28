@@ -43,7 +43,16 @@ data class TagData(
             "Jazz", "Classical", "Electronic", "Dance", "Hip-Hop", "R&B",
             "Soul", "Funk", "Metal", "Punk", "Folk", "Country", "Blues",
             "Reggae", "Latin", "Soundtrack", "Children", "Comedy", "World",
-            "Alternative", "Indie", "Enka"
+            "Alternative", "Indie", "Enka",
+            // More widely used tags (MusicBrainz / Deezer genre lists).
+            "Ambient", "Disco", "House", "Techno", "Trance", "Dubstep",
+            "EDM", "Drum and Bass", "Lo-fi", "Chillout", "Hard Rock",
+            "Progressive Rock", "Synth-pop", "New Age", "K-Pop", "City Pop",
+            "Reggaeton", "Salsa", "Healing",
+            // Japanese genre names in common use.
+            "アニソン", "ゲーム", "ボーカロイド", "歌謡曲", "演歌",
+            "アイドル", "声優", "特撮", "童謡", "民謡", "ヒーリング",
+            "シティポップ"
         )
     }
 

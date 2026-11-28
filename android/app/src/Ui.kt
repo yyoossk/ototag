@@ -140,10 +140,13 @@ object GenrePicker {
     fun show(
         ctx: android.app.Activity,
         custom: List<String>,
-        persist: (List<String>) -> Unit,
+        hidden: List<String>,
+        persistCustom: (List<String>) -> Unit,
+        persistHidden: (List<String>) -> Unit,
         onPick: (String) -> Unit
     ) {
         var mine = custom
+        var gone = hidden
         val scroll = android.widget.ScrollView(ctx)
         val col = android.widget.LinearLayout(ctx).apply {
             orientation = android.widget.LinearLayout.VERTICAL
@@ -168,6 +171,14 @@ object GenrePicker {
                 setPadding(0, dp(10), 0, dp(10))
                 setOnClickListener { onClick() }
             }
+        fun confirmDelete(name: String, action: () -> Unit) {
+            android.app.AlertDialog.Builder(ctx)
+                .setTitle(name)
+                .setMessage(com.yyoo.ototag.core.Strings.t("genre_del_confirm"))
+                .setPositiveButton(com.yyoo.ototag.core.Strings.t("delete")) { _, _ -> action() }
+                .setNegativeButton(com.yyoo.ototag.core.Strings.t("cancel"), null)
+                .show()
+        }
         fun render() {
             col.removeAllViews()
             if (mine.isNotEmpty()) {
@@ -182,19 +193,63 @@ object GenrePicker {
                         android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                     row.addView(tv)
                     row.addView(Button(ctx).apply {
-                        text = "✕"
+                        text = "\u2715"
                         setOnClickListener {
-                            mine = com.yyoo.ototag.core.GenreList.remove(mine, g)
-                            persist(mine)
-                            render()
+                            confirmDelete(g) {
+                                mine = com.yyoo.ototag.core.GenreList.remove(mine, g)
+                                persistCustom(mine)
+                                render()
+                            }
                         }
                     })
                     col.addView(row)
                 }
             }
             section(com.yyoo.ototag.core.Strings.t("genre_defaults"))
-            for (g in com.yyoo.ototag.core.TagData.GENRES)
-                col.addView(nameRow(g) { dlg.dismiss(); onPick(g) })
+            for (g in com.yyoo.ototag.core.GenreList.visibleDefaults(gone)) {
+                val row = android.widget.LinearLayout(ctx).apply {
+                    orientation = android.widget.LinearLayout.HORIZONTAL
+                    gravity = android.view.Gravity.CENTER_VERTICAL
+                }
+                val tv = nameRow(g) { dlg.dismiss(); onPick(g) }
+                tv.layoutParams = android.widget.LinearLayout.LayoutParams(0,
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                row.addView(tv)
+                row.addView(Button(ctx).apply {
+                    text = "\u2715"
+                    setOnClickListener {
+                        confirmDelete(g) {
+                            gone = com.yyoo.ototag.core.GenreList.hide(gone, g)
+                            persistHidden(gone)
+                            render()
+                        }
+                    }
+                })
+                col.addView(row)
+            }
+            val restorable = gone.filter { it in com.yyoo.ototag.core.TagData.GENRES }
+            if (restorable.isNotEmpty()) {
+                section(com.yyoo.ototag.core.Strings.t("genre_hidden"))
+                for (g in restorable) {
+                    val row = android.widget.LinearLayout(ctx).apply {
+                        orientation = android.widget.LinearLayout.HORIZONTAL
+                        gravity = android.view.Gravity.CENTER_VERTICAL
+                    }
+                    val tv = nameRow(g) { }
+                    tv.layoutParams = android.widget.LinearLayout.LayoutParams(0,
+                        android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    row.addView(tv)
+                    row.addView(Button(ctx).apply {
+                        text = com.yyoo.ototag.core.Strings.t("genre_restore")
+                        setOnClickListener {
+                            gone = com.yyoo.ototag.core.GenreList.unhide(gone, g)
+                            persistHidden(gone)
+                            render()
+                        }
+                    })
+                    col.addView(row)
+                }
+            }
         }
         render()
         dlg.show()

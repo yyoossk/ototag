@@ -178,12 +178,18 @@ fun main() {
 
     // --- custom genre list ---
     check("genre parse", GenreList.parse("Rock\n\n City Pop \nRock") == listOf("Rock", "City Pop"))
-    check("genre add", GenreList.add(listOf("Rock"), "City Pop") == listOf("Rock", "City Pop"))
+    check("genre add", GenreList.add(listOf("Rock"), "My Genre") == listOf("Rock", "My Genre"))
     check("genre add dup", GenreList.add(listOf("Rock"), "Rock") == listOf("Rock"))
     check("genre add builtin", GenreList.add(emptyList(), "Rock") == emptyList<String>())
     check("genre add blank", GenreList.add(listOf("Rock"), "  ") == listOf("Rock"))
     check("genre remove", GenreList.remove(listOf("Rock", "City Pop"), "Rock") == listOf("City Pop"))
     check("genre roundtrip", GenreList.parse(GenreList.serialize(listOf("A", "B"))) == listOf("A", "B"))
+    check("genre defaults have jp", TagData.GENRES.contains("アニソン") && TagData.GENRES.contains("ゲーム"))
+    check("genre visible defaults", GenreList.visibleDefaults(listOf("Rock")).size == TagData.GENRES.size - 1 &&
+        !GenreList.visibleDefaults(listOf("Rock")).contains("Rock"))
+    check("genre hide", GenreList.hide(emptyList(), "Rock") == listOf("Rock"))
+    check("genre hide custom no-op", GenreList.hide(emptyList(), "City Pop X") == emptyList<String>())
+    check("genre unhide", GenreList.unhide(listOf("Rock"), "Rock") == emptyList<String>())
 
     // --- disguised container: a real MP4 carrying an .mp3 name (YouTube download) ---
     val work2 = File("testwork"); work2.mkdirs()

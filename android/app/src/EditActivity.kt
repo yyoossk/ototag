@@ -128,7 +128,8 @@ class EditActivity : Activity() {
             val et: EditText = if (k == "genre") {
                 android.widget.AutoCompleteTextView(this).apply {
                     setAdapter(android.widget.ArrayAdapter(this@EditActivity,
-                        android.R.layout.simple_dropdown_item_1line, TagData.GENRES))
+                        android.R.layout.simple_dropdown_item_1line,
+                        GenreList.visibleDefaults(hiddenGenres()) + customGenres()))
                     threshold = 1
                     setOnClickListener { if (text.isEmpty()) showDropDown() }
                 }
@@ -142,8 +143,8 @@ class EditActivity : Activity() {
                 btns.addView(Button(this).apply {
                     text = Strings.t("genre_pick"); Ui.styleButton(this, Ui.TEAL)
                     setOnClickListener {
-                        GenrePicker.show(this@EditActivity, customGenres(),
-                            { persistCustomGenres(it) }) { g -> et.setText(g) }
+                        GenrePicker.show(this@EditActivity, customGenres(), hiddenGenres(),
+                            { persistCustomGenres(it) }, { persistHiddenGenres(it) }) { g -> et.setText(g) }
                     }
                 })
                 btns.addView(Button(this).apply {
@@ -275,6 +276,14 @@ class EditActivity : Activity() {
     private fun persistCustomGenres(list: List<String>) {
         getSharedPreferences("ototag", MODE_PRIVATE).edit()
             .putString("custom_genres", GenreList.serialize(list)).apply()
+    }
+
+    private fun hiddenGenres(): List<String> = GenreList.parse(
+        getSharedPreferences("ototag", MODE_PRIVATE).getString("hidden_genres", ""))
+
+    private fun persistHiddenGenres(list: List<String>) {
+        getSharedPreferences("ototag", MODE_PRIVATE).edit()
+            .putString("hidden_genres", GenreList.serialize(list)).apply()
     }
 
     private fun togglePlay() {
